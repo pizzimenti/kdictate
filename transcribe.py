@@ -15,11 +15,11 @@ from runtime_profile import resolve_runtime, set_thread_env
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Transcribe audio with Whisper V3 Turbo (CTranslate2/faster-whisper).")
+    parser = argparse.ArgumentParser(description="Transcribe audio with Whisper (CTranslate2/faster-whisper).")
     parser.add_argument("audio", help="Path to input audio file.")
     parser.add_argument(
         "--model-dir",
-        default="models/whisper-large-v3-turbo-ct2-int8",
+        default="models/distil-large-v3-ct2-int8",
         help="Path to converted CTranslate2 model directory.",
     )
     parser.add_argument(
@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
         help="faster-whisper compute type. If omitted, auto-selects.",
     )
     parser.add_argument("--cpu-threads", type=int, default=None, help="Override CPU thread count.")
-    parser.add_argument("--language", default=None, help="Language code (for example: en, es, fr).")
+    parser.add_argument("--language", default="en", help="Language code (for example: en, es, fr).")
     parser.add_argument("--task", default="transcribe", choices=("transcribe", "translate"), help="Whisper task.")
     parser.add_argument("--beam-size", type=int, default=1, help="Beam size (1 is fastest).")
     parser.add_argument("--best-of", type=int, default=1, help="Candidates when temperature > 0.")
@@ -73,7 +73,7 @@ def main() -> int:
     model_dir = Path(args.model_dir)
     if not model_dir.exists():
         print(f"Model directory not found: {model_dir}")
-        print("Run: python prepare_model.py")
+        print("Prepare the default model first: python prepare_model.py")
         return 1
 
     runtime = resolve_runtime(args.device, args.compute_type, args.cpu_threads)

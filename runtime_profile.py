@@ -17,11 +17,13 @@ except ImportError:
 
 
 def recommended_cpu_threads() -> int:
-    """Choose a conservative CPU thread count for consistent low-latency runs.
+    """Choose CPU thread count for local transcription.
 
-    Physical-core count is preferred over logical-thread count to avoid
-    oversubscription on mobile CPUs. If physical-core info is unavailable,
-    use half of logical threads as a fallback.
+    Default to all logical cores to maximize sustained decode throughput.
+
+    Audio capture and terminal output run on lightweight threads; keeping one
+    core reserved under-utilized the CPU on this laptop during real-time
+    transcription.
     """
     if psutil is not None:
         physical = psutil.cpu_count(logical=False)
@@ -29,9 +31,11 @@ def recommended_cpu_threads() -> int:
     else:
         physical = None
         logical = os.cpu_count() or 1
+    if logical and logical > 0:
+        return logical
     if physical and physical > 0:
         return physical
-    return max(1, logical // 2)
+    return max(1, os.cpu_count() or 1)
 
 
 def resolve_runtime(device: str | None, compute_type: str | None, cpu_threads: int | None) -> dict:
@@ -58,9 +62,6 @@ def resolve_runtime(device: str | None, compute_type: str | None, cpu_threads: i
 
 
 def set_thread_env(cpu_threads: int) -> None:
-    """Set common math-runtime thread env vars when not already defined.
-
-    `setdefault` preserves explicit user overrides from the shell.
-    """
+    """Set common math-runtime thread env vars to the selected thread count."""
     for var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
-        os.environ.setdefault(var, str(cpu_threads))
+        os.environ[var] = str(cpu_threads)
