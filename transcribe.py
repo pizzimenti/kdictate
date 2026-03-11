@@ -11,7 +11,7 @@ import json
 import time
 from pathlib import Path
 
-from runtime_profile import resolve_runtime, set_thread_env
+from runtime_profile import recommended_shortform_cpu_threads, resolve_runtime, set_thread_env
 
 
 def parse_args() -> argparse.Namespace:
@@ -19,7 +19,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("audio", help="Path to input audio file.")
     parser.add_argument(
         "--model-dir",
-        default="models/distil-large-v3-ct2-int8",
+        default="models/distil-medium-en-ct2-int8",
         help="Path to converted CTranslate2 model directory.",
     )
     parser.add_argument(
@@ -34,7 +34,12 @@ def parse_args() -> argparse.Namespace:
         choices=("float32", "float16", "int8", "int8_float16"),
         help="faster-whisper compute type. If omitted, auto-selects.",
     )
-    parser.add_argument("--cpu-threads", type=int, default=None, help="Override CPU thread count.")
+    parser.add_argument(
+        "--cpu-threads",
+        type=int,
+        default=recommended_shortform_cpu_threads(),
+        help="Override CPU thread count. Defaults to a short-form latency-oriented value.",
+    )
     parser.add_argument("--language", default="en", help="Language code (for example: en, es, fr).")
     parser.add_argument("--task", default="transcribe", choices=("transcribe", "translate"), help="Whisper task.")
     parser.add_argument("--beam-size", type=int, default=1, help="Beam size (1 is fastest).")
@@ -103,6 +108,7 @@ def main() -> int:
         temperature=args.temperature,
         condition_on_previous_text=args.condition_on_previous_text,
         vad_filter=args.vad_filter,
+        without_timestamps=not args.word_timestamps,
         word_timestamps=args.word_timestamps,
         initial_prompt=args.initial_prompt,
     )

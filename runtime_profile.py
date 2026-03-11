@@ -38,6 +38,26 @@ def recommended_cpu_threads() -> int:
     return max(1, os.cpu_count() or 1)
 
 
+def recommended_shortform_cpu_threads() -> int:
+    """Choose CPU threads for single-utterance or dictation-style decode.
+
+    Short clips benefit less from saturating all logical cores, and on this
+    project's CPU benchmarks that increased scheduling overhead enough to hurt
+    latency. Prefer physical cores when available, otherwise fall back to half
+    the logical count.
+    """
+    if psutil is not None:
+        physical = psutil.cpu_count(logical=False)
+        if physical and physical > 0:
+            return physical
+        logical = psutil.cpu_count(logical=True) or os.cpu_count() or 1
+    else:
+        logical = os.cpu_count() or 1
+    if logical <= 2:
+        return max(1, logical)
+    return max(1, logical // 2)
+
+
 def resolve_runtime(device: str | None, compute_type: str | None, cpu_threads: int | None) -> dict:
     """Resolve effective runtime options under a CPU-only policy.
 

@@ -19,12 +19,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Convert a Whisper-compatible model to local CTranslate2 format.")
     parser.add_argument(
         "--model-id",
-        default="distil-whisper/distil-large-v3",
+        default="distil-whisper/distil-medium.en",
         help="Hugging Face model ID to convert.",
     )
     parser.add_argument(
         "--output-dir",
-        default="models/distil-large-v3-ct2-int8",
+        default="models/distil-medium-en-ct2-int8",
         help="Destination directory for converted model.",
     )
     parser.add_argument(

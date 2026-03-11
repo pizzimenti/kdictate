@@ -17,7 +17,7 @@ import threading
 import time
 from pathlib import Path
 
-from runtime_profile import resolve_runtime, set_thread_env
+from runtime_profile import recommended_shortform_cpu_threads, resolve_runtime, set_thread_env
 
 
 def _notify(msg: str) -> None:
@@ -38,13 +38,36 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-dir",
-        default=str(Path(__file__).parent / "models/distil-large-v3-ct2-int8"),
+        default=str(Path(__file__).parent / "models/distil-medium-en-ct2-int8"),
         help="Path to CTranslate2 model directory.",
     )
     parser.add_argument("--language", default="en", help="Language code (e.g. en, es, fr).")
     parser.add_argument("--sample-rate", type=int, default=16000, help="Microphone sample rate.")
-    parser.add_argument("--beam-size", type=int, default=5, help="Whisper beam size.")
-    parser.add_argument("--cpu-threads", type=int, default=None, help="Override CPU thread count.")
+    parser.add_argument("--beam-size", type=int, default=1, help="Whisper beam size.")
+    parser.add_argument(
+        "--condition-on-previous-text",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Condition on previous text between segments.",
+    )
+    parser.add_argument(
+        "--vad-filter",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable built-in VAD filtering before decode.",
+    )
+    parser.add_argument(
+        "--no-speech-threshold",
+        type=float,
+        default=0.6,
+        help="Reject segments below this no-speech confidence threshold.",
+    )
+    parser.add_argument(
+        "--cpu-threads",
+        type=int,
+        default=recommended_shortform_cpu_threads(),
+        help="Override CPU thread count. Defaults to a short-form latency-oriented value.",
+    )
     parser.add_argument(
         "--compute-type",
         default=None,
@@ -73,6 +96,7 @@ def main() -> int:
         device=runtime["device"],
         compute_type=runtime["compute_type"],
         cpu_threads=runtime["cpu_threads"],
+        num_workers=1,
     )
     print(
         f"Model ready. device={runtime['device']} compute_type={runtime['compute_type']} "
@@ -135,7 +159,17 @@ def main() -> int:
 
         audio = np.concatenate(chunks).astype(np.float32) / 32768.0
         audio = audio.clip(-1.0, 1.0)
-        segments, _ = model.transcribe(audio, language=args.language, beam_size=args.beam_size)
+        segments, _ = model.transcribe(
+            audio,
+            language=args.language,
+            beam_size=args.beam_size,
+            best_of=1,
+            temperature=0.0,
+            condition_on_previous_text=args.condition_on_previous_text,
+            vad_filter=args.vad_filter,
+            no_speech_threshold=args.no_speech_threshold,
+            without_timestamps=True,
+        )
         text = " ".join(s.text.strip() for s in segments if s.text.strip())
         text = " ".join(text.split())
 

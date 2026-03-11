@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from runtime_profile import resolve_runtime, set_thread_env
+from runtime_profile import recommended_shortform_cpu_threads, resolve_runtime, set_thread_env
 
 
 @dataclass
@@ -67,7 +67,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-dir",
-        default="models/distil-large-v3-ct2-int8",
+        default="models/distil-medium-en-ct2-int8",
         help="Path to converted CTranslate2 model directory.",
     )
     parser.add_argument(
@@ -82,7 +82,12 @@ def parse_args() -> argparse.Namespace:
         choices=("float32", "float16", "int8", "int8_float16"),
         help="faster-whisper compute type. If omitted, auto-selects.",
     )
-    parser.add_argument("--cpu-threads", type=int, default=None, help="Override CPU thread count.")
+    parser.add_argument(
+        "--cpu-threads",
+        type=int,
+        default=recommended_shortform_cpu_threads(),
+        help="Override CPU thread count. Defaults to a short-form latency-oriented value.",
+    )
     parser.add_argument("--language", default="en", help="Language code, for example: en, es, fr.")
     parser.add_argument(
         "--task",
@@ -116,7 +121,7 @@ def parse_args() -> argparse.Namespace:
         default=2.5,
         help="Force transcription when an utterance reaches this length.",
     )
-    parser.add_argument("--beam-size", type=int, default=5, help="Whisper beam size (stock default is 5).")
+    parser.add_argument("--beam-size", type=int, default=1, help="Whisper beam size.")
     parser.add_argument(
         "--decode-workers",
         type=int,
@@ -162,6 +167,10 @@ def _transcribe_utterance(model, utterance_pcm: list["np.ndarray"], language: st
         language=language,
         task=task,
         beam_size=beam_size,
+        best_of=1,
+        temperature=0.0,
+        condition_on_previous_text=False,
+        without_timestamps=True,
     )
     text = " ".join(s.text.strip() for s in segments if s.text and s.text.strip()).strip()
     if not text:
