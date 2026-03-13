@@ -220,24 +220,12 @@ class HotkeyListener:
 
     def _stop_dictation(self) -> None:
         result = self._run_control("stop")
-        transcript = result.stdout.strip()
         if result.returncode != 0:
             error = result.stderr.strip() or "Dictation stop failed."
             _log(f"Stop failed: {error}")
             notify(error)
             return
-
-        if not transcript or transcript == NO_TRANSCRIPT_SENTINEL:
-            _log("Stop returned no transcript.")
-            notify("No speech detected.")
-            return
-
-        _log(f"Typing transcript into current keyboard focus: {transcript!r}")
-        typed = type_text(transcript)
-        if typed.returncode == 0:
-            notify("Typed transcript.")
-        else:
-            notify("Tried to type transcript, but ydotool failed.")
+        # The daemon streams and types each chunk in real-time, so no typing needed here.
 
     def _handle_hotkey_release(self, state: int, keycode: int) -> None:
         now = time.monotonic()
