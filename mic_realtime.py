@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from runtime_profile import recommended_shortform_cpu_threads, resolve_runtime, set_thread_env
+from whisper_common import load_whisper_model, transcribe_pcm
 
 
 @dataclass
@@ -171,32 +172,14 @@ def _transcribe_utterance(
     beam_size: int,
     no_speech_threshold: float,
 ) -> str:
-    import numpy as np
-
-    if not utterance_pcm:
-        return ""
-
-    audio_pcm = np.concatenate(utterance_pcm, axis=0)
-    if audio_pcm.size == 0:
-        return ""
-
-    audio_f32 = (audio_pcm.astype(np.float32) / 32768.0).clip(-1.0, 1.0)
-    segments, _ = model.transcribe(
-        audio_f32,
-        language=language,
+    return transcribe_pcm(
+        model,
+        utterance_pcm,
+        language=language or "en",
         task=task,
         beam_size=beam_size,
-        best_of=1,
-        temperature=0.0,
-        condition_on_previous_text=False,
-        vad_filter=False,
         no_speech_threshold=no_speech_threshold,
-        without_timestamps=True,
     )
-    text = " ".join(s.text.strip() for s in segments if s.text and s.text.strip()).strip()
-    if not text:
-        return ""
-    return " ".join(text.replace("\r", " ").replace("\n", " ").split())
 
 
 def _model_loader(
@@ -211,9 +194,7 @@ def _model_loader(
 ) -> None:
     started = time.perf_counter()
     try:
-        from faster_whisper import WhisperModel
-
-        model_box["model"] = WhisperModel(
+        model_box["model"] = load_whisper_model(
             model_dir,
             device=device,
             compute_type=compute_type,
@@ -578,14 +559,14 @@ def main() -> int:
     for _ in range(decode_workers):
         utterance_queue.put(None)
     for thread in decoder_threads:
-        thread.join()
+        thread.join(timeout=30)
 
     result_queue.put(None)
-    printer_thread.join()
-    loader_thread.join()
+    printer_thread.join(timeout=10)
+    loader_thread.join(timeout=30)
     diag_stop_event.set()
     if diag_thread is not None:
-        diag_thread.join()
+        diag_thread.join(timeout=5)
 
     print("\nStopped.", flush=True)
     return 0

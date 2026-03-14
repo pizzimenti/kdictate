@@ -27,7 +27,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from desktop_actions import notify, type_text
+from desktop_actions import DictationNotifier, notify, type_text
 from dictate_runtime import (
     STATE_IDLE,
     STATE_RECORDING,
@@ -38,6 +38,7 @@ from dictate_runtime import (
     write_state,
 )
 from runtime_profile import recommended_shortform_cpu_threads, resolve_runtime, set_thread_env
+from whisper_common import VADConfig, VADSegmenter, load_whisper_model, transcribe_pcm
 
 
 DEFAULT_RUNTIME_PATHS = default_runtime_paths()
@@ -155,37 +156,26 @@ def _load_model(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
         raise FileNotFoundError(f"Model directory not found: {model_dir}")
 
     print(f"Loading model from {model_dir}...", flush=True)
-    from faster_whisper import WhisperModel
-
-    model = WhisperModel(
-        str(model_dir),
+    model = load_whisper_model(
+        model_dir,
         device=runtime["device"],
         compute_type=runtime["compute_type"],
         cpu_threads=runtime["cpu_threads"],
-        num_workers=1,
     )
     return model, runtime
 
 
-def _transcribe_pcm(model: Any, pcm_chunks: list[Any], args: argparse.Namespace) -> str:
-    """Transcribe a list of int16 PCM chunks and return normalized text."""
-    import numpy as np
-
-    audio = np.concatenate(pcm_chunks).astype(np.float32) / 32768.0
-    audio = audio.clip(-1.0, 1.0)
-    segments, _ = model.transcribe(
-        audio,
+def _transcribe_pcm_with_args(model: Any, pcm_chunks: list[Any], args: argparse.Namespace) -> str:
+    """Transcribe a list of int16 PCM chunks using daemon CLI args."""
+    return transcribe_pcm(
+        model,
+        pcm_chunks,
         language=args.language,
         beam_size=args.beam_size,
-        best_of=1,
-        temperature=0.0,
-        condition_on_previous_text=False,
-        vad_filter=False,
         no_speech_threshold=args.no_speech_threshold,
-        without_timestamps=True,
+        condition_on_previous_text=args.condition_on_previous_text,
+        vad_filter=args.vad_filter,
     )
-    text = " ".join(s.text.strip() for s in segments if s.text and s.text.strip()).strip()
-    return " ".join(text.replace("\r", " ").replace("\n", " ").split())
 
 
 class DictationDaemon:
@@ -195,12 +185,17 @@ class DictationDaemon:
         self.args = args
         self.model = model
         self.runtime_paths = runtime_paths
+        self._notifier = DictationNotifier()
+
+        # Lock protects: _recording, _transcribing, _stream, _streamed_text,
+        # _vad_thread, _decode_thread.  Hold briefly — never call blocking I/O
+        # (join, stream.start, transcribe) while holding the lock.
         self._lock = threading.Lock()
         self._recording = False
         self._transcribing = False
         self._stream: Any | None = None
 
-        # Streaming pipeline state
+        # Streaming pipeline state (queues and event are thread-safe on their own)
         self._audio_queue: queue.Queue = queue.Queue(maxsize=512)
         self._utterance_queue: queue.Queue = queue.Queue(maxsize=64)
         self._stop_vad = threading.Event()
@@ -241,104 +236,34 @@ class DictationDaemon:
 
     def _vad_worker(self) -> None:
         """Segment audio by silence/maxlen and post utterance chunks to the decode queue."""
-        import numpy as np
-
-        block_ms = self.args.block_ms
-        sample_rate = self.args.sample_rate
-        silence_blocks = max(1, int(self.args.silence_ms / block_ms))
-        min_speech_blocks = max(1, int(self.args.min_speech_ms / block_ms))
-        start_speech_blocks = max(1, int(self.args.start_speech_ms / block_ms))
-        max_utterance_blocks = max(1, int((self.args.max_utterance_s * 1000.0) / block_ms))
-        energy_threshold = self.args.energy_threshold
-
-        utterance_pcm: list[Any] = []
-        pending_speech_pcm: list[Any] = []
-        pending_silence_pcm: list[Any] = []
-        in_speech = False
-        speech_block_count = 0
-        pending_speech_block_count = 0
-        trailing_silence_count = 0
-
-        def commit() -> None:
-            nonlocal in_speech, speech_block_count, pending_speech_block_count
-            nonlocal trailing_silence_count, utterance_pcm, pending_speech_pcm, pending_silence_pcm
-            if speech_block_count >= min_speech_blocks and utterance_pcm:
-                audio_seconds = sum(len(c) for c in utterance_pcm) / float(sample_rate)
-                try:
-                    self._utterance_queue.put_nowait((list(utterance_pcm), audio_seconds))
-                except queue.Full:
-                    pass
-            in_speech = False
-            speech_block_count = 0
-            pending_speech_block_count = 0
-            trailing_silence_count = 0
-            utterance_pcm.clear()
-            pending_speech_pcm.clear()
-            pending_silence_pcm.clear()
-
-        while not self._stop_vad.is_set():
-            try:
-                chunk = self._audio_queue.get(timeout=0.05)
-            except queue.Empty:
-                continue
-
-            rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
-            voiced = rms >= energy_threshold
-
-            if voiced:
-                if not in_speech:
-                    pending_speech_pcm.append(chunk)
-                    pending_speech_block_count += 1
-                    if pending_speech_block_count >= start_speech_blocks:
-                        in_speech = True
-                        utterance_pcm = list(pending_speech_pcm)
-                        speech_block_count = len(utterance_pcm)
-                        pending_speech_pcm = []
-                        pending_speech_block_count = 0
-                        pending_silence_pcm = []
-                        trailing_silence_count = 0
-                else:
-                    if pending_silence_pcm:
-                        utterance_pcm.extend(pending_silence_pcm)
-                        pending_silence_pcm = []
-                    utterance_pcm.append(chunk)
-                    speech_block_count += 1
-                    trailing_silence_count = 0
-            elif in_speech:
-                pending_silence_pcm.append(chunk)
-                trailing_silence_count += 1
-            else:
-                pending_speech_pcm = []
-                pending_speech_block_count = 0
-
-            if in_speech and speech_block_count >= max_utterance_blocks:
-                commit()
-                continue
-
-            if in_speech and trailing_silence_count >= silence_blocks:
-                commit()
-
-        # Flush any in-progress utterance when recording stops
-        if in_speech and speech_block_count >= min_speech_blocks and utterance_pcm:
-            commit()
-
-        # Signal the decode thread to exit
-        self._utterance_queue.put(None)
+        vad = VADSegmenter(
+            config=VADConfig(
+                sample_rate=self.args.sample_rate,
+                block_ms=self.args.block_ms,
+                energy_threshold=self.args.energy_threshold,
+                silence_ms=self.args.silence_ms,
+                min_speech_ms=self.args.min_speech_ms,
+                start_speech_ms=self.args.start_speech_ms,
+                max_utterance_s=self.args.max_utterance_s,
+            ),
+            audio_queue=self._audio_queue,
+            utterance_queue=self._utterance_queue,
+            stop_event=self._stop_vad,
+        )
+        vad.run()
 
     def _decode_worker(self) -> None:
-        """Transcribe each utterance chunk and type it immediately."""
+        """Transcribe each utterance chunk, accumulating text for final typing."""
         while True:
             item = self._utterance_queue.get()
             if item is None:
                 break
             pcm_chunks, _audio_seconds = item
             try:
-                text = _transcribe_pcm(self.model, pcm_chunks, self.args)
+                text = _transcribe_pcm_with_args(self.model, pcm_chunks, self.args)
                 if text:
                     with self._lock:
                         self._streamed_text.append(text)
-                    if self.args.type_output:
-                        type_text(text + " ")
                     print(f"Streamed: {text}", flush=True)
             except Exception as exc:  # noqa: BLE001
                 print(f"Decode failed: {exc}", file=sys.stderr, flush=True)
@@ -352,7 +277,6 @@ class DictationDaemon:
             if self._recording:
                 return
             if self._transcribing:
-                notify("Still transcribing previous utterance.")
                 return
             self._recording = True
             self._streamed_text = []
@@ -366,12 +290,12 @@ class DictationDaemon:
             self._set_runtime_state(STATE_RECORDING)
             write_last_text(self.runtime_paths.last_text_file, "")
 
-        # Start decode thread first so it's ready when VAD posts utterances
-        self._decode_thread = threading.Thread(target=self._decode_worker, daemon=True)
-        self._decode_thread.start()
-
-        self._vad_thread = threading.Thread(target=self._vad_worker, daemon=True)
-        self._vad_thread.start()
+            # Create and start threads while holding the lock so that
+            # stop_and_transcribe always sees them if _recording was True.
+            self._decode_thread = threading.Thread(target=self._decode_worker, daemon=True)
+            self._decode_thread.start()
+            self._vad_thread = threading.Thread(target=self._vad_worker, daemon=True)
+            self._vad_thread.start()
 
         block_size = max(1, int(self.args.sample_rate * self.args.block_ms / 1000))
         stream: Any | None = None
@@ -391,14 +315,20 @@ class DictationDaemon:
                 self._recording = False
                 self._stream = None
                 self._set_runtime_state(STATE_IDLE)
+            # Signal VAD to stop; it will post None to the decode queue
             self._stop_vad.set()
+            if self._vad_thread is not None:
+                self._vad_thread.join(timeout=5)
+            if self._decode_thread is not None:
+                self._decode_thread.join(timeout=5)
             self._close_stream(stream)
             notify("Microphone start failed.")
             print(f"Recording start failed: {exc}", file=sys.stderr, flush=True)
+
             return
 
         print("Recording started (streaming).", flush=True)
-        notify("● Listening...")
+        self._notifier.started()
 
     def stop_and_transcribe(self) -> None:
         """Stop recording, flush the streaming pipeline, and finalize."""
@@ -412,6 +342,7 @@ class DictationDaemon:
             self._stream = None
             self._set_runtime_state(STATE_TRANSCRIBING)
 
+        self._notifier.transcribing()
         self._close_stream(stream)
 
         # Signal VAD to flush remaining buffer and stop; it posts None to decode queue
@@ -430,14 +361,14 @@ class DictationDaemon:
             self._transcribing = False
             self._set_runtime_state(STATE_IDLE)
 
+        self._notifier.stopped()
         if text:
             write_last_text(self.runtime_paths.last_text_file, text)
-            preview = text[:60] + ("..." if len(text) > 60 else "")
-            notify(f"✓ {preview}")
+            if self.args.type_output:
+                type_text(text)
             print(f"Done: {text}", flush=True)
         else:
             write_last_text(self.runtime_paths.last_text_file, "")
-            notify("No speech detected.")
             print("No speech detected.", flush=True)
 
     def request_start(self) -> None:

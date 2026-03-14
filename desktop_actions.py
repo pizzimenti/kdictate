@@ -9,14 +9,63 @@ DEFAULT_APP_NAME = "whisper-dictate"
 DEFAULT_NOTIFY_TIMEOUT_MS = 3000
 
 
-def notify(message: str, *, app_name: str = DEFAULT_APP_NAME, timeout_ms: int = DEFAULT_NOTIFY_TIMEOUT_MS) -> None:
-    """Show a best-effort desktop notification without blocking the caller."""
+def _gdbus_notify(message: str, replace_id: int = 0, timeout_ms: int = DEFAULT_NOTIFY_TIMEOUT_MS, app_name: str = DEFAULT_APP_NAME) -> int:
+    """Send a notification via gdbus. Returns the notification ID (0 on failure)."""
+    cmd = [
+        "gdbus", "call", "--session",
+        "--dest", "org.freedesktop.Notifications",
+        "--object-path", "/org/freedesktop/Notifications",
+        "--method", "org.freedesktop.Notifications.Notify",
+        app_name,           # app_name
+        str(replace_id),    # replaces_id (0 = new)
+        "",                 # app_icon
+        app_name,           # summary
+        message,            # body
+        "[]",               # actions
+        "{}",               # hints
+        str(timeout_ms),    # expire_timeout
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+        if result.returncode == 0 and result.stdout.strip():
+            out = result.stdout.strip()
+            start = out.find("uint32 ")
+            if start != -1:
+                end = out.find(",", start)
+                return int(out[start + 7 : end])
+    except Exception:  # noqa: BLE001
+        pass
+    return 0
 
-    subprocess.Popen(
-        ["notify-send", "-a", app_name, "-t", str(timeout_ms), message],
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+
+def notify(message: str, *, timeout_ms: int = DEFAULT_NOTIFY_TIMEOUT_MS) -> None:
+    """Show a one-shot notification (no replace). Use for startup/errors."""
+    _gdbus_notify(message, replace_id=0, timeout_ms=timeout_ms)
+
+
+class DictationNotifier:
+    """Manage the notification lifecycle for a single recording session.
+
+    Create → replace → replace keeps the notification visible and in-place.
+    """
+
+    def __init__(self) -> None:
+        self._session_id: int = 0
+
+    def started(self) -> None:
+        """New notification for recording start (persistent until replaced)."""
+        self._session_id = _gdbus_notify("🎙️ Listening...", replace_id=0, timeout_ms=0)
+
+    def transcribing(self) -> None:
+        """Replace the listening notification with transcribing status."""
+        if self._session_id:
+            self._session_id = _gdbus_notify("Transcribing...", replace_id=self._session_id, timeout_ms=0)
+
+    def stopped(self) -> None:
+        """Replace with stopped, then let it expire."""
+        if self._session_id:
+            _gdbus_notify("Dictation stopped.", replace_id=self._session_id)
+        self._session_id = 0
 
 
 def type_text(text: str) -> subprocess.CompletedProcess[bytes]:

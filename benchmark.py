@@ -8,6 +8,7 @@ import time
 from pathlib import Path
 
 from runtime_profile import recommended_shortform_cpu_threads, resolve_runtime, set_thread_env
+from whisper_common import load_whisper_model
 
 
 def parse_args() -> argparse.Namespace:
@@ -87,15 +88,12 @@ def main() -> int:
     runtime = resolve_runtime(args.device, args.compute_type, args.cpu_threads)
     set_thread_env(runtime["cpu_threads"])
 
-    from faster_whisper import WhisperModel
-
     load_start = time.perf_counter()
-    model = WhisperModel(
-        str(model_dir),
+    model = load_whisper_model(
+        model_dir,
         device=runtime["device"],
         compute_type=runtime["compute_type"],
         cpu_threads=runtime["cpu_threads"],
-        num_workers=1,
     )
     load_seconds = time.perf_counter() - load_start
 

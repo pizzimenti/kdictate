@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from runtime_profile import recommended_cpu_threads, resolve_runtime, set_thread_env
+from whisper_common import load_whisper_model
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_MANIFEST = PROJECT_ROOT / "eval/audio/manifest.json"
@@ -168,15 +169,12 @@ def run_config(config: RunConfig, manifest: list[dict]) -> dict:
     if not model_path.exists():
         raise FileNotFoundError(f"Model not found: {model_path}")
 
-    from faster_whisper import WhisperModel
-
     load_start = time.perf_counter()
-    model = WhisperModel(
-        str(model_path),
+    model = load_whisper_model(
+        model_path,
         device=runtime["device"],
         compute_type=runtime["compute_type"],
         cpu_threads=runtime["cpu_threads"],
-        num_workers=1,
     )
     model_load_s = time.perf_counter() - load_start
 

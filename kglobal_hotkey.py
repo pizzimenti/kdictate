@@ -17,8 +17,6 @@ from pathlib import Path
 
 import gi
 
-from desktop_actions import notify
-
 gi.require_version("Gio", "2.0")
 from gi.repository import Gio, GLib
 
@@ -37,7 +35,6 @@ DEFAULT_IGNORED_MODIFIER_MASK = 0x12  # CapsLock + NumLock
 
 DBUS_REQUEST_NAME_PRIMARY_OWNER = 1
 DBUS_REQUEST_NAME_ALREADY_OWNER = 4
-NO_TRANSCRIPT_SENTINEL = "(no transcript)"
 
 
 def _log(message: str) -> None:
@@ -126,7 +123,6 @@ class HotkeyListener:
     def __init__(self, args: argparse.Namespace) -> None:
         self.args = args
         self.connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-        self.last_release_monotonic = 0.0
         self.hotkey_masks = _expand_modifier_masks(args.required_modifier_mask, args.ignored_modifier_mask)
 
     def _call(
@@ -211,34 +207,14 @@ class HotkeyListener:
     def _start_dictation(self) -> None:
         result = self._run_control("start")
         if result.returncode != 0:
-            error = result.stderr.strip() or "Dictation start failed."
-            _log(f"Start failed: {error}")
-            notify(error)
+            _log(f"Start failed: {result.stderr.strip()}")
             return
         _log("Dictation started.")
-        notify("● Listening...")
 
     def _stop_dictation(self) -> None:
         result = self._run_control("stop", "--no-wait")
         if result.returncode != 0:
-            error = result.stderr.strip() or "Dictation stop failed."
-            _log(f"Stop failed: {error}")
-            notify(error)
-
-    def _handle_hotkey_release(self, state: int, keycode: int) -> None:
-        now = time.monotonic()
-        if now - self.last_release_monotonic < (self.args.debounce_ms / 1000.0):
-            return
-        self.last_release_monotonic = now
-        _log(f"Received hotkey release. state=0x{state:x} keycode={keycode}")
-
-        state_name = self._daemon_state()
-        _log(f"Daemon state before handling hotkey: {state_name}")
-
-        if state_name == "recording":
-            self._stop_dictation()
-            return
-        self._start_dictation()
+            _log(f"Stop failed: {result.stderr.strip()}")
 
     def _on_key_event(
         self,
@@ -254,10 +230,17 @@ class HotkeyListener:
         released, state, keysym, _unichar, keycode = parameters.unpack()
         if keysym != self.args.hotkey_keysym:
             return
+
         if not released:
-            _log(f"Received hotkey press. state=0x{state:x} keycode={keycode}")
-            return
-        self._handle_hotkey_release(state, keycode)
+            _log(f"Hotkey press. state=0x{state:x} keycode={keycode}")
+            state_name = self._daemon_state()
+            if state_name != "recording":
+                self._start_dictation()
+        else:
+            _log(f"Hotkey release. state=0x{state:x} keycode={keycode}")
+            state_name = self._daemon_state()
+            if state_name == "recording":
+                self._stop_dictation()
 
 
 def main() -> int:

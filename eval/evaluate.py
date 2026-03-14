@@ -22,6 +22,7 @@ from pathlib import Path
 # Add parent dir so we can import runtime_profile
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from runtime_profile import recommended_shortform_cpu_threads, resolve_runtime, set_thread_env
+from whisper_common import load_whisper_model
 
 AUDIO_DIR = Path(__file__).parent / "audio"
 RESULTS_DIR = Path(__file__).parent / "results"
@@ -35,10 +36,7 @@ except ImportError:
 
 def download_samples(n: int) -> list[dict]:
     """Download n LibriSpeech test-clean samples, return list of {path, reference}."""
-    from huggingface_hub import hf_hub_download
     import json as _json
-    import soundfile as sf
-    import numpy as np
 
     print(f"Downloading {n} LibriSpeech test-clean samples...", flush=True)
 
@@ -69,8 +67,6 @@ def download_samples(n: int) -> list[dict]:
         print(f"  Using cached manifest ({len(manifest)} samples)", flush=True)
 
     return manifest
-
-    return samples
 
 
 def transcribe_sample(model, audio_path: str, language: str, beam_size: int,
@@ -137,14 +133,12 @@ def main() -> int:
 
     # Load model
     print(f"\nLoading model from {model_dir}...", flush=True)
-    from faster_whisper import WhisperModel
     load_start = time.perf_counter()
-    model = WhisperModel(
-        str(model_dir),
+    model = load_whisper_model(
+        model_dir,
         device=runtime["device"],
         compute_type=runtime["compute_type"],
         cpu_threads=runtime["cpu_threads"],
-        num_workers=1,
     )
     load_s = time.perf_counter() - load_start
     print(f"Model loaded in {load_s:.2f}s\n", flush=True)
