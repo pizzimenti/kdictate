@@ -233,16 +233,15 @@ class HotkeyListener:
                 return
             self._key_held = True
             _log(f"Hotkey press. state=0x{state:x} keycode={keycode}")
-            state_name = self._daemon_state()
-            if state_name != "recording":
-                self._start_dictation()
         else:
             if not self._key_held:
                 return
             self._key_held = False
             _log(f"Hotkey release. state=0x{state:x} keycode={keycode}")
             state_name = self._daemon_state()
-            if state_name == "recording":
+            if state_name == "idle":
+                self._start_dictation()
+            elif state_name == "recording":
                 self._stop_dictation()
 
 
