@@ -73,4 +73,4 @@ class DictationNotifier:
 def type_text(text: str) -> subprocess.CompletedProcess[bytes]:
     """Type text into the current keyboard focus via ydotool."""
 
-    return subprocess.run(["ydotool", "type", "--", text], check=False)
+    return subprocess.run(["ydotool", "type", "--key-delay", "2", "--key-hold", "2", "--", text], check=False)

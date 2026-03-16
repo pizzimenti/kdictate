@@ -23,9 +23,13 @@ import queue
 import signal
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import Any
+
+import gi
+
+gi.require_version("GLib", "2.0")
+from gi.repository import GLib
 
 from desktop_actions import DictationNotifier, notify, type_text
 from dictate_runtime import (
@@ -42,7 +46,7 @@ from whisper_common import VADConfig, VADSegmenter, load_whisper_model, transcri
 
 
 DEFAULT_RUNTIME_PATHS = default_runtime_paths()
-DEFAULT_MODEL_DIR = Path(__file__).parent / "models/distil-medium-en-ct2-int8"
+DEFAULT_MODEL_DIR = Path(__file__).parent / "models/whisper-large-v3-turbo-ct2"
 
 
 def parse_args() -> argparse.Namespace:
@@ -161,6 +165,7 @@ def _load_model(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
         device=runtime["device"],
         compute_type=runtime["compute_type"],
         cpu_threads=runtime["cpu_threads"],
+        num_workers=2,
     )
     return model, runtime
 
@@ -342,7 +347,15 @@ class DictationDaemon:
         self._notifier.transcribing()
         self._close_stream(stream)
 
-        # Signal VAD to flush remaining buffer and stop; it posts None to decode queue
+        # Type whatever is already decoded — key is released so Ctrl is no longer held.
+        with self._lock:
+            already_typed_count = len(self._streamed_text)
+            already_decoded = " ".join(self._streamed_text).strip()
+
+        if already_decoded and self.args.type_output:
+            type_text(already_decoded)
+
+        # Signal VAD to flush remaining buffer and stop; it posts None to decode queue.
         self._stop_vad.set()
 
         if self._vad_thread is not None:
@@ -354,43 +367,43 @@ class DictationDaemon:
             self._decode_thread = None
 
         with self._lock:
+            new_parts = self._streamed_text[already_typed_count:]
             text = " ".join(self._streamed_text).strip()
             self._transcribing = False
             self._set_runtime_state(STATE_IDLE)
 
+        if new_parts:
+            new_text = " ".join(new_parts).strip()
+            if new_text and self.args.type_output:
+                type_text((" " if already_decoded else "") + new_text)
+
         if text:
             write_last_text(self.runtime_paths.last_text_file, text)
-            if self.args.type_output:
-                type_text(text)
             print(f"Done: {text}", flush=True)
         else:
             write_last_text(self.runtime_paths.last_text_file, "")
             print("No speech detected.", flush=True)
         self._notifier.stopped()
 
+    @property
+    def state(self) -> str:
+        """Current daemon state, safe to call from any thread."""
+        with self._lock:
+            if self._recording:
+                return STATE_RECORDING
+            if self._transcribing:
+                return STATE_TRANSCRIBING
+            return STATE_IDLE
+
     def request_start(self) -> None:
-        """Queue a non-blocking start request from a signal handler."""
+        """Queue a non-blocking start request (signal handler or hotkey safe)."""
 
         threading.Thread(target=self.start_recording, daemon=True).start()
 
     def request_stop(self) -> None:
-        """Queue a non-blocking stop/transcribe request from a signal handler."""
+        """Queue a non-blocking stop/transcribe request (signal handler or hotkey safe)."""
 
         threading.Thread(target=self.stop_and_transcribe, daemon=True).start()
-
-    def install_signal_handlers(self) -> None:
-        """Bind ``SIGUSR1``/``SIGUSR2`` to the daemon control actions."""
-
-        def _on_sigusr1(signum: int, frame: Any) -> None:
-            del signum, frame
-            self.request_start()
-
-        def _on_sigusr2(signum: int, frame: Any) -> None:
-            del signum, frame
-            self.request_stop()
-
-        signal.signal(signal.SIGUSR1, _on_sigusr1)
-        signal.signal(signal.SIGUSR2, _on_sigusr2)
 
     def shutdown(self) -> None:
         """Reset the daemon to idle and close any open microphone stream."""
@@ -433,11 +446,36 @@ def main() -> int:
             last_text_file=Path(args.last_text_file),
         ),
     )
-    daemon.install_signal_handlers()
+
+    loop = GLib.MainLoop()
+
+    def _on_sigusr1() -> bool:
+        daemon.request_start()
+        return GLib.SOURCE_CONTINUE
+
+    def _on_sigusr2() -> bool:
+        daemon.request_stop()
+        return GLib.SOURCE_CONTINUE
+
+    def _on_sigterm() -> bool:
+        loop.quit()
+        return GLib.SOURCE_REMOVE
+
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, _on_sigusr1)
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR2, _on_sigusr2)
+    GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGTERM, _on_sigterm)
+
+    from kglobal_hotkey import HotkeyListener
 
     try:
-        while True:
-            time.sleep(1)
+        listener = HotkeyListener(daemon)
+        listener.register()
+    except Exception as exc:  # noqa: BLE001
+        print(f"Warning: hotkey listener unavailable: {exc}", file=sys.stderr)
+        print("  Terminal control still available via dictatectl.py", file=sys.stderr)
+
+    try:
+        loop.run()
     except KeyboardInterrupt:
         pass
     finally:

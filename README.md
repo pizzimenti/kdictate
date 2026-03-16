@@ -6,7 +6,7 @@ Local Whisper transcription for Wayland — three pieces:
 2. **System dictation daemon** (`dictate.py`): persistent mic capture/transcribe worker for dictation.
 3. **Global hotkey listener** (`kglobal_hotkey.py`): uses KWin's Wayland accessibility keyboard monitor to toggle dictation and always attempts to type the transcript into the current keyboard focus.
 
-This project is standardized on `distil-whisper/distil-medium.en` converted to CTranslate2 int8 for local English dictation on CPU.
+This project uses `openai/whisper-large-v3-turbo` converted to CTranslate2 int8 for local English dictation on CPU.
 
 ## Quick start
 
@@ -21,10 +21,10 @@ pip install -r requirements.txt
 Convert the model once:
 
 ```bash
-python prepare_model.py
+python prepare_model.py --model-id openai/whisper-large-v3-turbo --output-dir models/whisper-large-v3-turbo-ct2
 ```
 
-The bundled/default model is English-only. Historical evaluation artifacts for other models are retained under `eval/results/`, but the active project runtime is `distil-medium-en`.
+Historical evaluation artifacts for other models are retained under `eval/results/`.
 
 If `torch` is unavailable for your Python version, use a Python 3.12 venv for conversion only.
 
@@ -103,7 +103,7 @@ The daemon and helpers coordinate through two files under `XDG_RUNTIME_DIR`:
 
 ## Tuning
 
-- `--model-dir`: default is the English-only `distil-medium-en-ct2-int8`.
+- `--model-dir`: default is `whisper-large-v3-turbo-ct2`. For maximum accuracy use `whisper-large-v3-ct2` (1.3% vs 1.6% WER, ~1.4s slower startup).
 - `--cpu-threads N`: override thread count. Dictation-oriented defaults now use physical cores / short-form-friendly thread counts.
 - `--compute-type int8|float16|float32`: precision/runtime tradeoff.
 - `--language`: defaults to `en`.
@@ -188,11 +188,17 @@ For a very verbose real-time comparison that prints every emitted segment, per-s
 
 Each sweep writes `summary.json`, `leaderboard.csv`, `leaderboard.md`, and one JSON per config under `eval/results/sweeps/<timestamp>_<tag>/`. Those per-config JSON files include the model/settings used plus the reference and hypothesis for every audio file.
 
-Local March 11, 2026 results on the bundled 20-sample LibriSpeech set:
+March 2026 bakeoff results on the bundled 20-sample LibriSpeech set (beam=1, int8, no VAD, condition_on_previous=False):
 
-- Best speed/latency tradeoff: `distil-medium-en`, beam 1, `without_timestamps=True`, `cpu_threads=6` → avg normalized WER `2.49%`, overall RTF `0.361`, short clips (`<=4s`) averaged `2.91s`.
-- Best dictation defaults from the later exhaustive `distil-medium` sweep: `compute_type=int8`, `beam_size=1`, `cpu_threads=6`, `without_timestamps=True`, `vad_filter=False`, `condition_on_previous_text=False` for live cursor dictation.
-- Historical cross-model comparisons are retained in `eval/results/`, but they are not part of the active runtime anymore.
+| Model | Threads | Avg WER | RTF | Mean decode | Model load |
+|---|---|---|---|---|---|
+| whisper-large-v3 | 6 | **1.301%** | 0.716 | 5.888s | 6.218s |
+| whisper-large-v3-turbo | 12 | 1.614% | **0.545** | **4.485s** | 2.189s |
+| distil-large-v3.5 | 6 | 2.747% | 0.667 | 5.480s | 0.946s |
+
+- `whisper-large-v3-turbo` is the default: best overall speed on this 12-core machine, WER within 0.3pp of large-v3.
+- `whisper-large-v3` is the accuracy-first option: 1.3% WER, use `--model-dir models/whisper-large-v3-ct2`.
+- `distil-large-v3.5` was rejected: 2.1x worse WER than large-v3, no speed advantage over turbo, and consistent proper-noun truncation errors.
 
 ## Notes
 

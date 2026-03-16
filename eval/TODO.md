@@ -15,7 +15,7 @@
 - [x] Add `vad_filter=True` — critical, strips silence, prevents hallucination garbage
 - [x] Add `condition_on_previous_text=False` — prevents cascading hallucinations
 - [x] Add `no_speech_threshold=0.6` — reject low-confidence segments
-- [ ] Pick beam_size based on benchmark results (1 vs 5 tradeoff)
+- [x] Pick beam_size based on benchmark results — using beam=1 (bakeoff was run with beam=1, results are good)
 
 ## Speed fixes to investigate
 - [ ] Reduce beam_size (1 is ~2-3x faster, slight accuracy cost)
@@ -41,7 +41,8 @@
 - Current takeaway:
   - best accuracy: `whisper-large-v3`
   - best speed/accuracy compromise in the large-model group: `whisper-large-v3-turbo`
-  - `distil-large-v3.5` does not currently justify adoption on this CPU-only machine
+  - `distil-large-v3.5` **rejected**: 2.1x worse WER, no speed advantage over turbo, proper-noun truncation errors
+- **New default: `whisper-large-v3-turbo` (12 threads)** — updated `dictate.py` and README
 
 ### Commands
 - Convert `distil-large-v3.5`:
