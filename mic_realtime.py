@@ -17,7 +17,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from runtime_profile import recommended_shortform_cpu_threads, resolve_runtime, set_thread_env
-from whisper_common import load_whisper_model, transcribe_pcm
+from whisper_common import VAD_QUEUE_POLL_TIMEOUT_S, load_whisper_model, transcribe_pcm
 
 
 @dataclass
@@ -509,7 +509,7 @@ def main() -> int:
             if stop_event.is_set() and audio_queue.empty():
                 break
             try:
-                chunk = audio_queue.get(timeout=0.05)
+                chunk = audio_queue.get(timeout=VAD_QUEUE_POLL_TIMEOUT_S)
             except queue.Empty:
                 continue
 
