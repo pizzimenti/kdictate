@@ -117,6 +117,7 @@ The daemon and helpers coordinate through two files under `XDG_RUNTIME_DIR`:
 - `--energy-threshold`, `--start-speech-ms`, `--silence-ms`, `--max-utterance-s`: live CLI utterance-boundary controls.
 - `--task transcribe|translate`: keep original language vs force English output (CLI mode only).
 - `--decode-workers`, `--diag`, `--diag-interval-s`: parallelism and diagnostics (CLI mode only).
+- Runtime control/VAD polling now uses 150ms wait intervals to reduce idle wakeups without materially affecting dictation latency.
 
 ## Files
 

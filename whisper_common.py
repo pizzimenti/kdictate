@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+VAD_QUEUE_POLL_TIMEOUT_S = 0.15
+
 
 def load_whisper_model(
     model_dir: str | Path,
@@ -150,7 +152,7 @@ class VADSegmenter:
 
         while not self.stop_event.is_set():
             try:
-                chunk = self.audio_queue.get(timeout=0.05)
+                chunk = self.audio_queue.get(timeout=VAD_QUEUE_POLL_TIMEOUT_S)
             except queue.Empty:
                 continue
 

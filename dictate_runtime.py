@@ -17,6 +17,7 @@ from typing import Iterable
 
 
 DAEMON_PGREP_PATTERN = r"python.*dictate\.py"
+DEFAULT_STATE_POLL_INTERVAL_S = 0.15
 
 STATE_IDLE = "idle"
 STATE_RECORDING = "recording"
@@ -111,7 +112,7 @@ def wait_for_state(
     targets: Iterable[str],
     timeout: float,
     *,
-    poll_interval: float = 0.05,
+    poll_interval: float = DEFAULT_STATE_POLL_INTERVAL_S,
 ) -> str | None:
     """Wait for the daemon state file to reach one of ``targets``."""
 
