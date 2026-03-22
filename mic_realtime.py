@@ -466,7 +466,7 @@ def main() -> int:
         if speech_block_count >= min_speech_blocks and utterance_pcm:
             audio_samples = sum(len(chunk) for chunk in utterance_pcm)
             audio_seconds = audio_samples / float(args.sample_rate)
-            payload = (next_utterance_id, utterance_pcm, time.perf_counter(), audio_seconds)
+            payload = (next_utterance_id, list(utterance_pcm), time.perf_counter(), audio_seconds)
             next_utterance_id += 1
             try:
                 utterance_queue.put_nowait(payload)
@@ -479,9 +479,9 @@ def main() -> int:
         speech_block_count = 0
         pending_speech_block_count = 0
         trailing_silence_count = 0
-        utterance_pcm = []
-        pending_speech_pcm = []
-        pending_silence_pcm = []
+        utterance_pcm.clear()
+        pending_speech_pcm.clear()
+        pending_silence_pcm.clear()
 
     def audio_callback(indata, frames, callback_time, status) -> None:
         del frames, callback_time
@@ -522,16 +522,17 @@ def main() -> int:
                     pending_speech_block_count += 1
                     if pending_speech_block_count >= start_speech_blocks:
                         in_speech = True
-                        utterance_pcm = list(pending_speech_pcm)
+                        utterance_pcm.clear()
+                        utterance_pcm.extend(pending_speech_pcm)
                         speech_block_count = len(utterance_pcm)
-                        pending_speech_pcm = []
+                        pending_speech_pcm.clear()
                         pending_speech_block_count = 0
-                        pending_silence_pcm = []
+                        pending_silence_pcm.clear()
                         trailing_silence_count = 0
                 else:
                     if pending_silence_pcm:
                         utterance_pcm.extend(pending_silence_pcm)
-                        pending_silence_pcm = []
+                        pending_silence_pcm.clear()
                     utterance_pcm.append(chunk)
                     speech_block_count += 1
                     trailing_silence_count = 0
@@ -539,7 +540,7 @@ def main() -> int:
                 pending_silence_pcm.append(chunk)
                 trailing_silence_count += 1
             else:
-                pending_speech_pcm = []
+                pending_speech_pcm.clear()
                 pending_speech_block_count = 0
 
             if in_speech and speech_block_count >= max_utterance_blocks:
