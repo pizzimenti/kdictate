@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
+import whisper_dictate.core.daemon as daemon_module
 from whisper_dictate.config import DictationConfig
 from whisper_dictate.constants import STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_TRANSCRIBING
 from whisper_dictate.core.daemon import DictationDaemon
@@ -42,6 +46,19 @@ class _DummyStream:
 
     def close(self) -> None:
         self.closed = True
+
+
+class _BlockingStartStream(_DummyStream):
+    def __init__(self, start_called: threading.Event, allow_start_return: threading.Event) -> None:
+        super().__init__()
+        self._start_called = start_called
+        self._allow_start_return = allow_start_return
+
+    def start(self) -> None:
+        self._start_called.set()
+        if not self._allow_start_return.wait(timeout=1.0):
+            raise RuntimeError("stream start gate timed out")
+        super().start()
 
 
 class _DummyThread:
@@ -136,10 +153,90 @@ class DictationDaemonTest(unittest.TestCase):
 
             self.assertEqual(daemon.get_state(), STATE_IDLE)
             self.assertEqual(read_state(runtime_paths.state_file), STATE_IDLE)
-            self.assertIn(("state", STATE_RECORDING), sink.events)
+            self.assertNotIn(("state", STATE_RECORDING), sink.events)
             self.assertIn(("state", STATE_ERROR), sink.events)
             self.assertIn(("state", STATE_IDLE), sink.events)
             self.assertTrue(any(event[0] == "error" and event[1][0] == "audio_input_unavailable" for event in sink.events))
+
+    def test_stop_during_startup_cancels_pending_recording(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_paths = RuntimePaths(
+                state_file=Path(tmpdir) / "state",
+                last_text_file=Path(tmpdir) / "last",
+            )
+            sink = _RecordingEventSink(events=[])
+            stream = _DummyStream()
+            resolver_called = threading.Event()
+            allow_resolver_return = threading.Event()
+
+            def input_device_resolver() -> tuple[str, bool]:
+                resolver_called.set()
+                self.assertTrue(allow_resolver_return.wait(timeout=1.0))
+                return ("microphone", True)
+
+            daemon = DictationDaemon(
+                _make_config(runtime_paths),
+                model=object(),
+                runtime_paths=runtime_paths,
+                event_sink=sink,
+                stream_factory=lambda **kwargs: stream,
+                input_device_resolver=input_device_resolver,
+            )
+            daemon._vad_worker = lambda: None  # type: ignore[method-assign]
+            daemon._decode_worker = lambda: None  # type: ignore[method-assign]
+
+            start_thread = threading.Thread(target=daemon._run_start_session, daemon=True)
+            start_thread.start()
+            self.assertTrue(resolver_called.wait(timeout=1.0))
+
+            daemon._run_stop_session()
+            allow_resolver_return.set()
+            start_thread.join(timeout=1.0)
+
+            self.assertFalse(start_thread.is_alive())
+            self.assertEqual(daemon.get_state(), STATE_IDLE)
+            self.assertEqual(read_state(runtime_paths.state_file), STATE_IDLE)
+            self.assertFalse(stream.started)
+            self.assertFalse(stream.stopped)
+            self.assertFalse(stream.closed)
+            self.assertNotIn(("state", STATE_RECORDING), sink.events)
+
+    def test_stop_during_stream_start_closes_partial_session(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_paths = RuntimePaths(
+                state_file=Path(tmpdir) / "state",
+                last_text_file=Path(tmpdir) / "last",
+            )
+            sink = _RecordingEventSink(events=[])
+            start_called = threading.Event()
+            allow_start_return = threading.Event()
+            stream = _BlockingStartStream(start_called, allow_start_return)
+            daemon = DictationDaemon(
+                _make_config(runtime_paths),
+                model=object(),
+                runtime_paths=runtime_paths,
+                event_sink=sink,
+                stream_factory=lambda **kwargs: stream,
+                input_device_resolver=lambda: ("microphone", True),
+            )
+            daemon._vad_worker = lambda: None  # type: ignore[method-assign]
+            daemon._decode_worker = lambda: None  # type: ignore[method-assign]
+
+            start_thread = threading.Thread(target=daemon._run_start_session, daemon=True)
+            start_thread.start()
+            self.assertTrue(start_called.wait(timeout=1.0))
+
+            daemon._run_stop_session()
+            allow_start_return.set()
+            start_thread.join(timeout=1.0)
+
+            self.assertFalse(start_thread.is_alive())
+            self.assertEqual(daemon.get_state(), STATE_IDLE)
+            self.assertEqual(read_state(runtime_paths.state_file), STATE_IDLE)
+            self.assertTrue(stream.started)
+            self.assertTrue(stream.stopped)
+            self.assertTrue(stream.closed)
+            self.assertNotIn(("state", STATE_RECORDING), sink.events)
 
     def test_stop_waits_for_decode_worker_without_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -166,3 +263,40 @@ class DictationDaemonTest(unittest.TestCase):
 
             self.assertEqual(vad_thread.join_timeouts, [None])
             self.assertEqual(decode_thread.join_timeouts, [None])
+
+    def test_main_does_not_attach_event_sink_when_service_start_fails(self) -> None:
+        events: list[str] = []
+
+        class FakeDaemon:
+            def __init__(self, config, model, runtime_paths, *, logger=None) -> None:
+                del config, model, runtime_paths, logger
+                events.append("daemon.init")
+
+            def set_event_sink(self, sink) -> None:
+                del sink
+                events.append("daemon.set_event_sink")
+
+            def shutdown(self) -> None:
+                events.append("daemon.shutdown")
+
+        class FakeService:
+            def __init__(self, backend, *, logger=None) -> None:
+                del backend, logger
+                events.append("service.init")
+
+            def start(self) -> None:
+                events.append("service.start")
+                raise RuntimeError("boom")
+
+        runtime = {"device": "cpu", "compute_type": "int8", "cpu_threads": 1}
+        config = SimpleNamespace(runtime_paths=object())
+
+        with (
+            patch("whisper_dictate.core.daemon._load_model_and_config", return_value=(config, object(), runtime)),
+            patch("whisper_dictate.core.daemon.DictationDaemon", FakeDaemon),
+            patch("whisper_dictate.service.dbus_service.SessionDbusService", FakeService),
+        ):
+            exit_code = daemon_module.main([])
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(events, ["daemon.init", "service.init", "service.start", "daemon.shutdown"])

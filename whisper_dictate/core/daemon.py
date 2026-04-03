@@ -121,6 +121,7 @@ class DictationDaemon:
         self._transcription_fn = transcription_fn
         self._lock = threading.RLock()
         self._recording = False
+        self._starting = False
         self._transcribing = False
         self._state = STATE_IDLE
         self._last_text = ""
@@ -128,6 +129,7 @@ class DictationDaemon:
         self._audio_queue: queue.Queue[Any] = queue.Queue(maxsize=AUDIO_QUEUE_MAXSIZE)
         self._utterance_queue: queue.Queue[Any] = queue.Queue(maxsize=UTTERANCE_QUEUE_MAXSIZE)
         self._stop_vad = threading.Event()
+        self._cancel_start = threading.Event()
         self._pending_start = threading.Event()
         self._handles = _ThreadHandles()
 
@@ -225,6 +227,22 @@ class DictationDaemon:
         if require_exit and thread.is_alive():
             raise _WorkerJoinTimeoutError(f"{name} worker did not exit cleanly")
 
+    def _cleanup_start_handles(self) -> None:
+        """Stop any partially-started capture pipeline and clear worker handles."""
+
+        self._stop_vad.set()
+        stream = self._handles.stream
+        self._handles.stream = None
+        self._close_stream(stream)
+        try:
+            self._join_worker(self._handles.vad_thread, "vad", timeout=5.0, require_exit=True)
+            self._join_worker(self._handles.decode_thread, "decode", timeout=5.0, require_exit=True)
+        except _WorkerJoinTimeoutError as join_exc:
+            self._logger.error("%s", join_exc)
+        finally:
+            self._handles.vad_thread = None
+            self._handles.decode_thread = None
+
     def _build_stream(self) -> Any:
         """Build the input stream using the configured or default factory."""
 
@@ -308,30 +326,35 @@ class DictationDaemon:
         """Start the capture, VAD, and decode pipeline."""
 
         with self._lock:
-            if self._recording:
-                self._logger.info("start ignored because the daemon is already recording")
+            if self._recording or self._starting:
+                self._logger.info("start ignored because the daemon is already active")
                 return
             if self._transcribing:
                 self._pending_start.set()
                 self._logger.info("start deferred until transcription completes")
                 return
-            self._recording = True
+            self._starting = True
             self._transcribing = False
+            self._cancel_start.clear()
             self._reset_session_buffers()
             self._handles = _ThreadHandles()
             self._stop_vad.clear()
-            self._write_state(STATE_RECORDING)
-            write_last_text(self.runtime_paths.last_text_file, "")
 
         mic_name, mic_usable = self._input_device_resolver()
         if not mic_usable:
+            with self._lock:
+                self._starting = False
+                self._cancel_start.clear()
             error = AudioInputError(f"No usable input device: {mic_name}")
             self._write_state(STATE_ERROR)
             self._emit_error("audio_input_unavailable", str(error))
             self._write_state(STATE_IDLE)
+            return
+        if self._cancel_start.is_set():
             with self._lock:
-                self._recording = False
-                self._transcribing = False
+                self._starting = False
+                self._cancel_start.clear()
+            self._logger.info("recording start cancelled before activation")
             return
 
         self._handles.decode_thread = threading.Thread(
@@ -346,24 +369,45 @@ class DictationDaemon:
         )
         self._handles.decode_thread.start()
         self._handles.vad_thread.start()
+        if self._cancel_start.is_set():
+            self._cleanup_start_handles()
+            with self._lock:
+                self._starting = False
+                self._cancel_start.clear()
+            self._logger.info("recording start cancelled before activation")
+            return
 
         try:
             stream = self._build_stream()
-            stream.start()
             self._handles.stream = stream
+            if self._cancel_start.is_set():
+                self._cleanup_start_handles()
+                with self._lock:
+                    self._starting = False
+                    self._cancel_start.clear()
+                self._logger.info("recording start cancelled before activation")
+                return
+            stream.start()
+            if self._cancel_start.is_set():
+                self._cleanup_start_handles()
+                with self._lock:
+                    self._starting = False
+                    self._cancel_start.clear()
+                self._logger.info("recording start cancelled before activation")
+                return
+            with self._lock:
+                self._recording = True
+                self._starting = False
+            write_last_text(self.runtime_paths.last_text_file, "")
+            self._write_state(STATE_RECORDING)
             self._logger.info("recording started on %s", mic_name)
         except Exception as exc:  # noqa: BLE001
             self._logger.exception("recording start failed")
             self._emit_error("recording_start_failed", str(exc))
-            self._stop_vad.set()
-            self._close_stream(self._handles.stream)
-            self._handles.stream = None
-            try:
-                self._join_worker(self._handles.vad_thread, "vad", timeout=5.0, require_exit=True)
-                self._join_worker(self._handles.decode_thread, "decode", timeout=5.0, require_exit=True)
-            except _WorkerJoinTimeoutError as join_exc:
-                self._logger.error("%s", join_exc)
+            self._cleanup_start_handles()
             with self._lock:
+                self._starting = False
+                self._cancel_start.clear()
                 self._recording = False
                 self._transcribing = False
             self._write_state(STATE_ERROR)
@@ -373,6 +417,11 @@ class DictationDaemon:
         """Stop capture, flush decode workers, and publish the final transcript."""
 
         with self._lock:
+            if self._starting and not self._recording:
+                self._cancel_start.set()
+                self._stop_vad.set()
+                self._logger.info("stop requested while recording startup is still in progress")
+                return
             if not self._recording or self._transcribing:
                 self._logger.info("stop ignored because the daemon is not recording")
                 return
@@ -415,7 +464,12 @@ class DictationDaemon:
     def toggle(self) -> None:
         """Toggle between recording and idle states."""
 
-        state = self.get_state()
+        with self._lock:
+            starting = self._starting
+            state = self._state
+        if starting:
+            self.request_stop()
+            return
         if state == STATE_RECORDING:
             self.request_stop()
             return
@@ -446,9 +500,11 @@ class DictationDaemon:
         """Stop background workers and reset the daemon to idle."""
 
         self._pending_start.clear()
+        self._cancel_start.set()
         self._stop_vad.set()
         with self._lock:
             self._recording = False
+            self._starting = False
             self._transcribing = False
         self._close_stream(self._handles.stream)
         try:
@@ -494,7 +550,6 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     service = SessionDbusService(daemon, logger=configure_logging("whisper_dictate.dbus"))
-    daemon.set_event_sink(service)
 
     try:
         service.start()
@@ -502,6 +557,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("failed to start D-Bus service: %s", exc)
         daemon.shutdown()
         return 1
+    daemon.set_event_sink(service)
 
     loop = GLib.MainLoop()
 
