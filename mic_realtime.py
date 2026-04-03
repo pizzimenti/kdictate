@@ -17,7 +17,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from runtime_profile import recommended_shortform_cpu_threads, resolve_runtime, set_thread_env
-from whisper_common import VAD_QUEUE_POLL_TIMEOUT_S, load_whisper_model, transcribe_pcm
+from whisper_common import (
+    AUDIO_QUEUE_MAXSIZE,
+    UTTERANCE_QUEUE_MAXSIZE,
+    VAD_QUEUE_POLL_TIMEOUT_S,
+    VADConfig,
+    load_whisper_model,
+    transcribe_pcm,
+)
 
 
 @dataclass
@@ -370,13 +377,22 @@ def main() -> int:
         return 1
 
     block_size = max(1, int(args.sample_rate * (args.block_ms / 1000.0)))
-    silence_blocks = max(1, int(args.silence_ms / args.block_ms))
-    min_speech_blocks = max(1, int(args.min_speech_ms / args.block_ms))
-    start_speech_blocks = max(1, int(args.start_speech_ms / args.block_ms))
-    max_utterance_blocks = max(1, int((args.max_utterance_s * 1000.0) / args.block_ms))
+    _vad_cfg = VADConfig(
+        sample_rate=args.sample_rate,
+        block_ms=args.block_ms,
+        energy_threshold=args.energy_threshold,
+        silence_ms=args.silence_ms,
+        min_speech_ms=args.min_speech_ms,
+        start_speech_ms=args.start_speech_ms,
+        max_utterance_s=args.max_utterance_s,
+    )
+    silence_blocks = _vad_cfg.silence_blocks
+    min_speech_blocks = _vad_cfg.min_speech_blocks
+    start_speech_blocks = _vad_cfg.start_speech_blocks
+    max_utterance_blocks = _vad_cfg.max_utterance_blocks
 
-    audio_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=512)
-    utterance_queue: queue.Queue[tuple[int, list[np.ndarray], float, float] | None] = queue.Queue(maxsize=64)
+    audio_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=AUDIO_QUEUE_MAXSIZE)
+    utterance_queue: queue.Queue[tuple[int, list[np.ndarray], float, float] | None] = queue.Queue(maxsize=UTTERANCE_QUEUE_MAXSIZE)
     result_queue: queue.Queue[tuple[int, str] | None] = queue.Queue(maxsize=64)
 
     stop_event = threading.Event()

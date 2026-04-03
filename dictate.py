@@ -44,7 +44,14 @@ from dictate_runtime import (
     write_state,
 )
 from runtime_profile import recommended_shortform_cpu_threads, resolve_runtime, set_thread_env
-from whisper_common import VADConfig, VADSegmenter, load_whisper_model, transcribe_pcm
+from whisper_common import (
+    AUDIO_QUEUE_MAXSIZE,
+    UTTERANCE_QUEUE_MAXSIZE,
+    VADConfig,
+    VADSegmenter,
+    load_whisper_model,
+    transcribe_pcm,
+)
 
 
 DEFAULT_RUNTIME_PATHS = default_runtime_paths()
@@ -116,7 +123,7 @@ def parse_args() -> argparse.Namespace:
         "--vad-filter",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Enable built-in VAD filtering before decode.",
+        help="Enable Whisper's built-in VAD filtering before decode. Off by default because the daemon already uses custom energy-based VAD for real-time utterance segmentation.",
     )
     parser.add_argument(
         "--no-speech-threshold",
@@ -213,19 +220,6 @@ def _load_model(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
     return model, runtime
 
 
-def _transcribe_pcm_with_args(model: Any, pcm_chunks: list[Any], args: argparse.Namespace) -> str:
-    """Transcribe a list of int16 PCM chunks using daemon CLI args."""
-    return transcribe_pcm(
-        model,
-        pcm_chunks,
-        language=args.language,
-        beam_size=args.beam_size,
-        no_speech_threshold=args.no_speech_threshold,
-        condition_on_previous_text=args.condition_on_previous_text,
-        vad_filter=args.vad_filter,
-    )
-
-
 class DictationDaemon:
     """Own the warm model plus the record/transcribe lifecycle."""
 
@@ -244,8 +238,8 @@ class DictationDaemon:
         self._stream: Any | None = None
 
         # Streaming pipeline state (queues and event are thread-safe on their own)
-        self._audio_queue: queue.Queue = queue.Queue(maxsize=512)
-        self._utterance_queue: queue.Queue = queue.Queue(maxsize=64)
+        self._audio_queue: queue.Queue = queue.Queue(maxsize=AUDIO_QUEUE_MAXSIZE)
+        self._utterance_queue: queue.Queue = queue.Queue(maxsize=UTTERANCE_QUEUE_MAXSIZE)
         self._stop_vad = threading.Event()
         self._pending_start = threading.Event()
         self._vad_thread: threading.Thread | None = None
@@ -309,7 +303,15 @@ class DictationDaemon:
                 break
             pcm_chunks, _audio_seconds = item
             try:
-                text = _transcribe_pcm_with_args(self.model, pcm_chunks, self.args)
+                text = transcribe_pcm(
+                    self.model,
+                    pcm_chunks,
+                    language=self.args.language,
+                    beam_size=self.args.beam_size,
+                    no_speech_threshold=self.args.no_speech_threshold,
+                    condition_on_previous_text=self.args.condition_on_previous_text,
+                    vad_filter=self.args.vad_filter,
+                )
                 if text:
                     with self._lock:
                         self._streamed_text.append(text)
@@ -360,9 +362,9 @@ class DictationDaemon:
                 blocksize=block_size,
                 callback=self._input_callback,
             )
+            stream.start()
             with self._lock:
                 self._stream = stream
-            stream.start()
         except Exception as exc:  # noqa: BLE001
             with self._lock:
                 self._recording = False

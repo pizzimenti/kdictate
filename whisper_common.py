@@ -13,6 +13,8 @@ from pathlib import Path
 from typing import Any
 
 VAD_QUEUE_POLL_TIMEOUT_S = 0.15
+AUDIO_QUEUE_MAXSIZE = 512    # ~15s of 30ms blocks at 16kHz
+UTTERANCE_QUEUE_MAXSIZE = 64  # max in-flight utterances
 
 
 def load_whisper_model(
@@ -91,6 +93,22 @@ class VADConfig:
     start_speech_ms: int = 90
     max_utterance_s: float = 2.5
 
+    @property
+    def silence_blocks(self) -> int:
+        return max(1, int(self.silence_ms / self.block_ms))
+
+    @property
+    def min_speech_blocks(self) -> int:
+        return max(1, int(self.min_speech_ms / self.block_ms))
+
+    @property
+    def start_speech_blocks(self) -> int:
+        return max(1, int(self.start_speech_ms / self.block_ms))
+
+    @property
+    def max_utterance_blocks(self) -> int:
+        return max(1, int((self.max_utterance_s * 1000.0) / self.block_ms))
+
 
 class VADSegmenter:
     """Energy-based voice activity detector that segments audio into utterances.
@@ -120,10 +138,10 @@ class VADSegmenter:
         import numpy as np
 
         cfg = self.config
-        silence_blocks = max(1, int(cfg.silence_ms / cfg.block_ms))
-        min_speech_blocks = max(1, int(cfg.min_speech_ms / cfg.block_ms))
-        start_speech_blocks = max(1, int(cfg.start_speech_ms / cfg.block_ms))
-        max_utterance_blocks = max(1, int((cfg.max_utterance_s * 1000.0) / cfg.block_ms))
+        silence_blocks = cfg.silence_blocks
+        min_speech_blocks = cfg.min_speech_blocks
+        start_speech_blocks = cfg.start_speech_blocks
+        max_utterance_blocks = cfg.max_utterance_blocks
 
         utterance_pcm: list[Any] = []
         pending_speech_pcm: list[Any] = []

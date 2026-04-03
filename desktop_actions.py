@@ -8,6 +8,7 @@ import subprocess
 DEFAULT_APP_NAME = "whisper-dictate"
 DEFAULT_NOTIFY_TIMEOUT_MS = 3000
 DEFAULT_YDOTOOL_TIMEOUT_S = 10
+MAX_YDOTOOL_TIMEOUT_S = 60
 
 
 def _gdbus_notify(message: str, replace_id: int = 0, timeout_ms: int = DEFAULT_NOTIFY_TIMEOUT_MS, app_name: str = DEFAULT_APP_NAME) -> int:
@@ -78,5 +79,5 @@ def type_text(text: str) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(
         ["ydotool", "type", "--key-delay", "25", "--key-hold", "10", "--", text],
         check=False,
-        timeout=max(DEFAULT_YDOTOOL_TIMEOUT_S, len(text) * 0.05),
+        timeout=min(MAX_YDOTOOL_TIMEOUT_S, max(DEFAULT_YDOTOOL_TIMEOUT_S, len(text) * 0.05)),
     )

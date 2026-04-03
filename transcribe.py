@@ -56,7 +56,7 @@ def parse_args() -> argparse.Namespace:
         "--vad-filter",
         action=argparse.BooleanOptionalAction,
         default=True,
-        help="Enable built-in VAD filtering.",
+        help="Enable Whisper's built-in VAD filtering. On by default for offline transcription where there is no external VAD and it improves accuracy on files with silence.",
     )
     parser.add_argument(
         "--word-timestamps",
