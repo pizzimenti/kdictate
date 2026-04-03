@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component>
+  <name>io.github.pizzimenti.WhisperDictate</name>
+  <description>Whisper Dictate IBus component metadata</description>
+  <exec>ibus-engine-whisper-dictate</exec>
+  <author>OpenAI Codex</author>
+  <license>MIT</license>
+  <homepage>https://github.com/pizzimenti/whisper-dictate</homepage>
+  <engine>
+    <name>io.github.pizzimenti.WhisperDictate1</name>
+    <longname>Whisper Dictate</longname>
+    <description>Session D-Bus driven dictation engine</description>
+    <language>en</language>
+    <layout>default</layout>
+  </engine>
+</component>

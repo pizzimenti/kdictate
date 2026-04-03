@@ -1,10 +1,10 @@
 # whisper-dictate
 
-Local Whisper transcription for Wayland — three pieces:
+Local Whisper transcription for Wayland, redesigned around IBus as the only text-placement path:
 
 1. **Live CLI** (`mic_realtime.py`): streams mic audio to the terminal in real time.
-2. **System dictation daemon** (`dictate.py`): persistent mic capture/transcribe worker for dictation.
-3. **Global hotkey listener** (`kglobal_hotkey.py`): uses KWin's Wayland accessibility keyboard monitor to toggle dictation and always attempts to type the transcript into the current keyboard focus.
+2. **Core dictation daemon** (`dictate.py`): persistent mic capture/transcribe worker that publishes transcript/state events on session D-Bus.
+3. **IBus frontend**: the only component allowed to place text into applications; it consumes daemon transcript events and maps them to IBus preedit and commit.
 
 This project uses `openai/whisper-large-v3-turbo` converted to CTranslate2 int8 for local English dictation on CPU.
 
@@ -38,13 +38,13 @@ Press `Enter` to stop.
 
 ### System dictation daemon
 
-On Arch/Manjaro, `install.sh` handles everything automatically:
+On Arch/Manjaro, `install.sh` handles the bootstrap path automatically:
 
 ```bash
 bash install.sh
 ```
 
-It installs `wl-clipboard`, sets up the Python environment, and registers the `whisper-dictate` systemd user service.
+It installs `ibus`, sets up the Python environment, registers the `io.github.pizzimenti.WhisperDictate.service` systemd user unit, installs the D-Bus activation file, and places the IBus component metadata under the current user's data directory.
 
 To start the daemon manually instead:
 
@@ -53,24 +53,15 @@ source .venv/bin/activate
 python dictate.py
 ```
 
-Recommended path on KDE/Wayland:
+The daemon publishes the reverse-DNS session bus name `io.github.pizzimenti.WhisperDictate1`, and the IBus frontend is expected to be selected by that engine name once the frontend package is installed.
+
+The core service is user-level and idempotent:
 
 ```bash
-systemctl --user enable --now whisper-dictate
-systemctl --user enable --now whisper-dictate-hotkey
+systemctl --user enable --now io.github.pizzimenti.WhisperDictate.service
 ```
 
-The hotkey listener grabs `Ctrl+Space` directly through KWin's accessibility keyboard monitor. On each press it:
-
-- starts dictation immediately
-- stops dictation on the next press
-- attempts to type the transcript into the current keyboard focus
-
-There is no AT-SPI cursor/editability gate anymore. If the current target cannot accept typed text, the transcript is still saved in the daemon runtime files and copied to the Wayland clipboard via `wl-copy` for manual paste.
-
-KWin currently restricts that keyboard-monitor interface to the screen-reader bus name `org.gnome.Orca.KeyboardMonitor`, so `whisper-dictate-hotkey.service` owns that name while it runs. If you use Orca, stop the hotkey service first or the listener will fail to start.
-
-If the hotkey listener is not running, or you want to test without the global shortcut backend, use the terminal control path instead:
+If you want to confirm the D-Bus API manually, use the terminal control path once the daemon-side service is available:
 
 ```bash
 python dictatectl.py start
@@ -78,15 +69,25 @@ python dictatectl.py start
 python dictatectl.py stop
 ```
 
-`stop` waits for transcription to finish and prints the latest transcript from the daemon runtime files, so you can test dictation without depending on a global shortcut backend.
+`stop` waits for transcription to finish and prints the latest transcript from the daemon runtime files.
+
+### IBus selection flow
+
+After the IBus frontend is installed, enable it the same way you would any other IBus engine:
+
+1. Open your IBus configuration tool.
+2. Add `Whisper Dictate` or the reverse-DNS engine name `io.github.pizzimenti.WhisperDictate1`.
+3. Select it in the input method switcher when you want dictation text to flow into the focused application.
+
+The daemon never inserts text directly. Partial transcript should appear as preedit and final transcript should be committed by the IBus frontend only.
 
 ## Architecture
 
-- `dictate.py`: long-lived daemon that keeps the Whisper model warm, owns microphone capture/transcription, and writes shared runtime files.
+- `dictate.py`: long-lived daemon that keeps the Whisper model warm, owns microphone capture/transcription, and publishes transcript/state events.
 - `dictatectl.py`: stdlib control plane for `start`, `stop`, `toggle`, `status`, and `last-text`.
-- `kglobal_hotkey.py`: system-Python KWin keyboard-monitor listener for the working `Ctrl+Space` toggle.
+- `whisper_dictate/`: shared package for constants, exceptions, logging, and D-Bus contract scaffolding.
 - `dictate_runtime.py`: shared runtime-path, daemon-state, and signaling helpers used by the daemon and control helpers.
-- `desktop_actions.py`: shared notification and clipboard-paste helpers for desktop side effects.
+- `desktop_actions.py`: shared notification helpers for desktop side effects.
 
 ### Runtime files
 
@@ -95,7 +96,7 @@ The daemon and helpers coordinate through two files under `XDG_RUNTIME_DIR`:
 - `whisper-dictate-<uid>.state`: current daemon state (`idle`, `recording`, or `transcribing`)
 - `whisper-dictate-<uid>.last.txt`: latest completed transcript
 
-`dictate.py` owns writes to those files. `dictatectl.py` and `kglobal_hotkey.py` read them so control/status behavior stays consistent even though the hotkey listener runs under system Python.
+`dictate.py` owns writes to those files. `dictatectl.py` reads them so control/status behavior stays consistent across shells and user services.
 
 ### Helper scripts
 
@@ -109,8 +110,8 @@ The daemon and helpers coordinate through two files under `XDG_RUNTIME_DIR`:
 - `--language`: defaults to `en`.
 - `--beam-size`: daemon and live CLI default to 1.
 - `--state-file`: daemon runtime state file shared by `dictate.py`, `dictatectl.py`, and the helper scripts.
-- `--last-text-file`: latest transcript file shared by `dictate.py`, `dictatectl.py`, and the hotkey listener.
-- `--type-output/--no-type-output`: let the daemon type directly or leave typing to an external helper.
+- `--last-text-file`: latest transcript file shared by `dictate.py` and `dictatectl.py`.
+- `--type-output/--no-type-output`: legacy daemon-side typing toggle; the IBus-only path uses `--no-type-output`.
 - `--vad-filter/--no-vad-filter`: daemon defaults to `vad_filter=False` for lower-latency short-form dictation.
 - `--condition-on-previous-text/--no-condition-on-previous-text`: daemon defaults to `False` to reduce cascading hallucinations.
 - `--no-speech-threshold`: Whisper-side non-speech rejection. The daemon defaults to `0.6`.
@@ -121,19 +122,20 @@ The daemon and helpers coordinate through two files under `XDG_RUNTIME_DIR`:
 
 ## Files
 
-- `install.sh`: install dependencies and register the systemd service (Arch/Manjaro).
+- `install.sh`: install dependencies, register the user service, and install the D-Bus and IBus metadata (Arch/Manjaro).
 - `prepare_model.py`: download and convert the model.
 - `mic_realtime.py`: live terminal transcription.
 - `dictate.py`: system-wide dictation daemon.
 - `dictate_runtime.py`: shared runtime-path, state-file, and daemon-signaling helpers.
-- `desktop_actions.py`: shared desktop notification and typing helpers.
+- `desktop_actions.py`: shared desktop notification helpers.
 - `dictatectl.py`: terminal control helper for `start`, `stop`, `toggle`, `status`, and `last-text`.
-- `kglobal_hotkey.py`: KWin accessibility hotkey listener that always attempts pasting into the current keyboard focus.
+- `systemd/io.github.pizzimenti.WhisperDictate.service`: systemd user unit for the core daemon.
+- `packaging/io.github.pizzimenti.WhisperDictate.service`: D-Bus activation file for the daemon.
+- `packaging/io.github.pizzimenti.WhisperDictate.component.xml`: IBus component metadata for the engine frontend.
+- `scripts/check-ibus-only.sh`: smoke check for forbidden injector and clipboard backends.
 - `ptt-press.sh`: push-to-talk press wrapper around `dictatectl.py start --no-wait`.
 - `ptt-release.sh`: push-to-talk release wrapper around `dictatectl.py stop --no-wait`.
 - `toggle.sh`: fallback toggle wrapper around `dictatectl.py toggle --no-wait`.
-- `whisper-dictate-hotkey.service`: user service for the global hotkey listener.
-- `whisper-dictate.service`: systemd user unit.
 - `transcribe.py`: transcribe an audio file.
 - `benchmark.py`: latency and RTF benchmarking.
 - `eval/sweep.py`: run the current `distil-medium-en` tuning matrix and save per-config transcripts, timings, and WER results.

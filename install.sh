@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-USER_SERVICE_NAME="whisper-dictate.service"
+SELF="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+SERVICE_NAME="io.github.pizzimenti.WhisperDictate.service"
+DBUS_SERVICE_NAME="io.github.pizzimenti.WhisperDictate1.service"
+IBUS_COMPONENT_NAME="io.github.pizzimenti.WhisperDictate.component.xml"
 
-if [[ $EUID -ne 0 ]]; then
-    exec pkexec bash "$SELF" "$@"
-fi
+log() {
+    printf '%s\n' "==> $*"
+}
+
+die() {
+    printf '%s\n' "error: $*" >&2
+    exit 1
+}
+
+require_command() {
+    command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
+}
 
 run_as_user() {
     if [[ -n "${PKEXEC_UID:-}" ]]; then
@@ -17,32 +28,77 @@ run_as_user() {
     fi
 }
 
+install_rendered_file() {
+    local source_file="$1"
+    local destination_file="$2"
+    local parent_dir
+
+    parent_dir="$(dirname "$destination_file")"
+    run_as_user mkdir -p "$parent_dir"
+    run_as_user bash -lc "sed 's|@@REPO_DIR@@|${SCRIPT_DIR}|g' '$source_file' > '$destination_file'"
+}
+
+install_copied_file() {
+    local source_file="$1"
+    local destination_file="$2"
+    local parent_dir
+
+    parent_dir="$(dirname "$destination_file")"
+    run_as_user mkdir -p "$parent_dir"
+    run_as_user install -m 0644 "$source_file" "$destination_file"
+}
+
+if [[ $EUID -ne 0 ]]; then
+    exec pkexec bash "$SELF" "$@"
+fi
+
 if [[ -n "${PKEXEC_UID:-}" ]]; then
     HOME="$(getent passwd "$PKEXEC_UID" | cut -d: -f6)"
     export HOME
 fi
 
-echo "==> Installing wl-clipboard"
-pacman -S --noconfirm --needed wl-clipboard
+require_command pacman
+require_command python3
+require_command systemctl
+require_command gdbus
+require_command sed
 
-echo "==> Creating Python virtual environment"
+log "Installing required system package: ibus"
+pacman -S --noconfirm --needed ibus
+
+require_command ibus-daemon
+
+log "Creating Python virtual environment"
 run_as_user python3 -m venv "$SCRIPT_DIR/.venv"
 
-echo "==> Installing Python dependencies"
+log "Installing Python dependencies"
 run_as_user "$SCRIPT_DIR/.venv/bin/pip" install --upgrade pip
 run_as_user "$SCRIPT_DIR/.venv/bin/pip" install -r "$SCRIPT_DIR/requirements.txt"
 
-echo "==> Installing whisper-dictate systemd user service"
-run_as_user mkdir -p "$HOME/.config/systemd/user"
-run_as_user bash -lc "sed 's|@@REPO_DIR@@|${SCRIPT_DIR}|g' '${SCRIPT_DIR}/whisper-dictate.service' > '${HOME}/.config/systemd/user/${USER_SERVICE_NAME}'"
-run_as_user systemctl --user daemon-reload
-run_as_user systemctl --user enable --now whisper-dictate
+log "Installing systemd user service"
+install_rendered_file \
+    "$SCRIPT_DIR/systemd/$SERVICE_NAME" \
+    "$HOME/.config/systemd/user/$SERVICE_NAME"
 
-echo ""
-echo "Done. The daemon is enabled (hotkey listener is built-in)."
-echo "  Ctrl+Space is grabbed via KWin's accessibility keyboard monitor on Wayland."
-echo "  Terminal control remains available via ${SCRIPT_DIR}/dictatectl.py."
-echo "  If you run Orca, stop whisper-dictate first because both need"
-echo "  the same keyboard-monitor D-Bus name."
-echo ""
-echo "The whisper-dictate service will start automatically on your next login."
+log "Installing D-Bus activation service"
+install_rendered_file \
+    "$SCRIPT_DIR/packaging/io.github.pizzimenti.WhisperDictate.service" \
+    "$HOME/.local/share/dbus-1/services/$DBUS_SERVICE_NAME"
+
+log "Installing IBus component metadata"
+install_copied_file \
+    "$SCRIPT_DIR/packaging/$IBUS_COMPONENT_NAME" \
+    "$HOME/.local/share/ibus/component/$IBUS_COMPONENT_NAME"
+
+log "Reloading the user systemd manager"
+run_as_user systemctl --user daemon-reload
+run_as_user systemctl --user enable --now "$SERVICE_NAME"
+
+echo
+echo "Done."
+echo "  Systemd user service: $SERVICE_NAME"
+echo "  D-Bus activation name: io.github.pizzimenti.WhisperDictate1"
+echo "  IBus component metadata: $IBUS_COMPONENT_NAME"
+echo
+echo "Select the Whisper Dictate engine from IBus after the frontend is installed."
+echo "The core daemon now stays on the transcription side of the boundary only."

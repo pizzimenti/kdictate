@@ -1,4 +1,4 @@
-"""Desktop-side helpers shared by the daemon and the hotkey listener."""
+"""Desktop notification helpers shared by the daemon and control helpers."""
 
 from __future__ import annotations
 
@@ -68,8 +68,3 @@ class DictationNotifier:
         if self._session_id:
             _gdbus_notify("transcription complete", replace_id=self._session_id)
         self._session_id = 0
-
-
-def type_text(text: str) -> None:
-    """Copy text to the Wayland clipboard for manual paste."""
-    subprocess.run(["wl-copy", "--", text], check=True, timeout=3)
