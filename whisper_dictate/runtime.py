@@ -42,7 +42,24 @@ def default_runtime_paths(*, uid: int | None = None) -> RuntimePaths:
     """Return the default XDG runtime file locations for the current user."""
 
     actual_uid = os.getuid() if uid is None else uid
-    runtime_dir = Path(os.environ.get("XDG_RUNTIME_DIR", "/tmp"))
+    xdg = os.environ.get("XDG_RUNTIME_DIR")
+    if xdg:
+        runtime_dir = Path(xdg)
+    else:
+        # XDG_RUNTIME_DIR is always set on a live systemd desktop session, but
+        # may be absent in minimal or headless environments.  /run/user/<uid>
+        # is the canonical backing directory that systemd creates for each user
+        # and is only accessible to that user (mode 700), so it is a safe
+        # second choice.  Falling back to /tmp would expose state files to
+        # other users on multi-user systems.
+        fallback = Path(f"/run/user/{actual_uid}")
+        if fallback.is_dir():
+            runtime_dir = fallback
+        else:
+            raise RuntimeError(
+                "XDG_RUNTIME_DIR is not set and /run/user/{uid} does not exist; "
+                "cannot determine a safe runtime directory"
+            )
     return RuntimePaths(
         state_file=runtime_dir / f"whisper-dictate-{actual_uid}.state",
         last_text_file=runtime_dir / f"whisper-dictate-{actual_uid}.last.txt",

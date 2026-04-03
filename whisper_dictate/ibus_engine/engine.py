@@ -6,6 +6,11 @@ import logging
 from types import ModuleType
 from typing import Any
 
+import gi
+
+gi.require_version("GLib", "2.0")
+from gi.repository import GLib
+
 from whisper_dictate.constants import APP_ROOT_ID, DBUS_BUS_NAME, DBUS_INTERFACE
 from whisper_dictate.exceptions import IbusEngineError
 from whisper_dictate.logging_utils import configure_logging
@@ -118,7 +123,12 @@ def create_ibus_engine_class(ibus_module: ModuleType | None = None) -> type[Any]
             del keycode
             if is_toggle_shortcut(keyval, state, ibus):
                 self._logger.info("Ctrl+Space received by IBus engine; toggling daemon recording")
-                self._control.toggle()
+                # Dispatch via idle_add so that do_process_key_event returns
+                # immediately.  DaemonControlBridge.toggle() calls call_sync()
+                # with a 5-second timeout; blocking here would freeze all
+                # keyboard delivery on the KDE/Wayland desktop if the daemon
+                # is slow or unreachable.
+                GLib.idle_add(self._control.toggle)
                 return True
             return False
 
@@ -135,18 +145,6 @@ def create_ibus_engine_class(ibus_module: ModuleType | None = None) -> type[Any]
     WhisperDictateEngine.__qualname__ = "WhisperDictateEngine"
     return WhisperDictateEngine
 
-
-def create_engine_instance(engine_name: str = ENGINE_NAME, object_path: str = ENGINE_OBJECT_PATH) -> Any:
-    """Create a concrete engine instance for the IBus factory."""
-
-    ibus = load_ibus_module()
-    engine_type = create_ibus_engine_class(ibus)
-    try:
-        bus = ibus.Bus.new()
-        connection = bus.get_connection()
-        return ibus.Engine.new_with_type(engine_type.__gtype__, engine_name, object_path, connection)
-    except Exception as exc:  # noqa: BLE001
-        raise IbusEngineError(f"Unable to create IBus engine instance: {exc}") from exc
 
 
 def build_engine_factory(bus: Any | None = None, ibus_module: ModuleType | None = None) -> Any:

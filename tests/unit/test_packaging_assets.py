@@ -52,6 +52,7 @@ class PackagingAssetTests(unittest.TestCase):
 
         self.assertIn("Name=io.github.pizzimenti.WhisperDictate1", dbus_service)
         self.assertIn("Exec=", dbus_service)
+        self.assertIn("SystemdService=io.github.pizzimenti.WhisperDictate.service", dbus_service)
         self.assertIn("io.github.pizzimenti.WhisperDictate.service", systemd_service_path.name)
         self.assertIn("ExecStart=", systemd_service)
         self.assertIn("dictate.py", dbus_service)
@@ -66,6 +67,7 @@ class PackagingAssetTests(unittest.TestCase):
         self.assertTrue(env_template_path.exists())
         self.assertIn("IBUS_COMPONENT_PATH=", env_template)
         self.assertIn("@@HOME@@/.local/share/ibus/component", env_template)
+        self.assertIn("${IBUS_COMPONENT_PATH:+:$IBUS_COMPONENT_PATH}", env_template)
         self.assertIn("XMODIFIERS=@im=ibus", env_template)
         self.assertNotIn("GTK_IM_MODULE=ibus", env_template)
         self.assertNotIn("QT_IM_MODULE=ibus", env_template)

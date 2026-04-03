@@ -76,7 +76,6 @@ IBUS_COMPONENT_PATH_VALUE="${HOME}/.local/share/ibus/component:/usr/share/ibus/c
 IBUS_COMPONENT_PATH_ESCAPED="$(printf '%s' "$IBUS_COMPONENT_PATH_VALUE" | sed -e 's/[&|\\]/\\&/g')"
 
 require_command pacman
-require_command ibus
 require_command python3
 require_command systemctl
 require_command gdbus
@@ -85,6 +84,7 @@ require_command sed
 log "Installing required system package: ibus"
 pacman -S --noconfirm --needed ibus
 
+require_command ibus
 require_command ibus-daemon
 
 log "Creating Python virtual environment"
@@ -135,11 +135,15 @@ fi
 
 if command -v kwriteconfig6 >/dev/null 2>&1; then
     log "Configuring KDE Wayland to use IBus Wayland as the virtual keyboard"
-    run_as_user kwriteconfig6 \
-        --file "$HOME/.config/kwinrc" \
-        --group Wayland \
-        --key InputMethod \
-        "$KDE_VIRTUAL_KEYBOARD_DESKTOP"
+    if [[ -f "$KDE_VIRTUAL_KEYBOARD_DESKTOP" ]]; then
+        run_as_user kwriteconfig6 \
+            --file "$HOME/.config/kwinrc" \
+            --group Wayland \
+            --key InputMethod \
+            "$KDE_VIRTUAL_KEYBOARD_DESKTOP"
+    else
+        log "Warning: $KDE_VIRTUAL_KEYBOARD_DESKTOP not found; skipping InputMethod configuration"
+    fi
     run_as_user kwriteconfig6 \
         --file "$HOME/.config/kwinrc" \
         --group Wayland \

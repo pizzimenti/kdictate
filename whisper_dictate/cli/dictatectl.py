@@ -205,10 +205,7 @@ def _handle_start(client: DbusControlClient, timeout: float, wait: bool) -> int:
     if new_state in {STATE_RECORDING, STATE_TRANSCRIBING}:
         print(new_state)
         return 0
-    if new_state == STATE_ERROR:
-        print("Recording failed to start.", file=sys.stderr)
-        return 1
-    if new_state == STATE_IDLE:
+    if new_state in {STATE_ERROR, STATE_IDLE}:
         print("Recording failed to start.", file=sys.stderr)
         return 1
     if new_state is None:

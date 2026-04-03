@@ -226,6 +226,11 @@ class DictationEngineController:
         )
 
     def _can_commit_final(self) -> bool:
+        # Intentionally does NOT check daemon_state.  FinalTranscript and
+        # StateChanged(idle) are both queued via GLib.idle_add on the daemon
+        # side, so the commit handler may be called before the state update
+        # lands in the controller.  Gating on daemon_state would silently drop
+        # text whenever idle arrives first.
         return self._state.enabled and self._state.focused and self._state.daemon_available
 
     def _sync_preedit(self, *, reason: str) -> None:

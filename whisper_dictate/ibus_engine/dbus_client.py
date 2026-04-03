@@ -132,34 +132,45 @@ class DaemonSignalBridge:
         self._logger.debug("Unsubscribed from daemon transcript signals")
 
     def _seed_state(self, connection: Gio.DBusConnection) -> None:
-        """Query the daemon state once so reconnects are deterministic."""
+        """Query the daemon state asynchronously so reconnects are deterministic.
 
-        try:
-            result = connection.call_sync(
-                self._bus_name,
-                self._object_path,
-                self._interface_name,
-                "GetState",
-                None,
-                GLib.VariantType("(s)"),
-                Gio.DBusCallFlags.NONE,
-                5000,
-                None,
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._logger.warning("GetState failed while seeding daemon state: %s", exc)
-            return
+        This is called from _on_name_appeared, which runs on the GLib main loop
+        thread.  Using call() (async) instead of call_sync() avoids blocking the
+        entire event loop — and therefore all IBus preedit updates — while the
+        daemon responds.
+        """
 
-        if result is None:
-            return
+        def _on_reply(source: Any, result: Gio.AsyncResult, user_data: object) -> None:
+            try:
+                reply = connection.call_finish(result)
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("GetState failed while seeding daemon state: %s", exc)
+                return
 
-        try:
-            (state,) = result.unpack()
-        except Exception as exc:  # noqa: BLE001
-            self._logger.warning("Could not unpack GetState reply: %s", exc)
-            return
+            if reply is None:
+                return
 
-        self._controller.handle_state_changed(str(state))
+            try:
+                (state,) = reply.unpack()
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("Could not unpack GetState reply: %s", exc)
+                return
+
+            self._controller.handle_state_changed(str(state))
+
+        connection.call(
+            self._bus_name,
+            self._object_path,
+            self._interface_name,
+            "GetState",
+            None,
+            GLib.VariantType("(s)"),
+            Gio.DBusCallFlags.NONE,
+            5000,
+            None,
+            _on_reply,
+            None,
+        )
 
     def _on_signal(
         self,

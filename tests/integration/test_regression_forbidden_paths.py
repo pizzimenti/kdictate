@@ -30,7 +30,10 @@ class ForbiddenPathRegressionTests(unittest.TestCase):
             for path in paths:
                 if path.suffix not in ALLOWED_SUFFIXES:
                     continue
-                text = path.read_text(encoding="utf-8")
+                try:
+                    text = path.read_text(encoding="utf-8")
+                except UnicodeDecodeError:
+                    continue
                 for token in FORBIDDEN_TOKENS:
                     if token in text:
                         violations.append(f"{path}: {token}")

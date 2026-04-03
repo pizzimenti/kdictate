@@ -31,7 +31,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(CANONICAL_STATES, (STATE_IDLE, STATE_STARTING, STATE_RECORDING, STATE_TRANSCRIBING, STATE_ERROR))
 
     def test_dbus_introspection_contains_required_methods_and_signals(self) -> None:
-        root = ET.fromstring(DBUS_INTROSPECTION_XML[DBUS_INTROSPECTION_XML.index("<node>"):])
+        root = ET.fromstring(DBUS_INTROSPECTION_XML[DBUS_INTROSPECTION_XML.index("<node>"):])  # noqa: S314
         interface = root.find("interface")
         self.assertIsNotNone(interface)
         assert interface is not None

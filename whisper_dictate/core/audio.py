@@ -37,11 +37,13 @@ def resolve_default_input_device() -> tuple[str, bool]:
         in_target = False
         for line in result.stdout.splitlines():
             stripped = line.strip()
-            if stripped.startswith("Name:") and stripped.split(None, 1)[1] == source_name:
+            parts = stripped.split(None, 1)
+            if stripped.startswith("Name:") and len(parts) > 1 and parts[1] == source_name:
                 in_target = True
             elif in_target and stripped.startswith("Description:"):
                 return (stripped.split(":", 1)[1].strip(), True)
-    except Exception:  # noqa: BLE001
-        pass
+    except Exception as exc:  # noqa: BLE001
+        import logging
+        logging.getLogger(__name__).warning("Failed to resolve input device description: %s", exc)
 
     return (source_name, True)

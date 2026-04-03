@@ -27,7 +27,16 @@ class FakeSignalBus:
     def subscribe(self, signal_name: str, callback: Callable[..., None]) -> None:
         """Register a callback for a specific signal name."""
 
-        self._subscribers.setdefault(signal_name, []).append(callback)
+        bucket = self._subscribers.setdefault(signal_name, [])
+        if callback not in bucket:
+            bucket.append(callback)
+
+    def unsubscribe(self, signal_name: str, callback: Callable[..., None]) -> None:
+        """Remove a previously registered callback."""
+
+        bucket = self._subscribers.get(signal_name, [])
+        if callback in bucket:
+            bucket.remove(callback)
 
     def emit(self, signal_name: str, *args: str) -> None:
         """Emit a signal and synchronously fan it out to subscribers."""
@@ -171,12 +180,18 @@ class TranscriptBridge:
     def attach(self, bus: FakeSignalBus | None) -> bool:
         """Attach to a bus and subscribe to transcript signals."""
 
+        old_bus = self._bus
         self._bus = bus
         if bus is None:
             self._logger.warning("daemon unavailable")
             self.connected = False
             return False
 
+        if old_bus is not None:
+            old_bus.unsubscribe("PartialTranscript", self._on_partial_transcript)
+            old_bus.unsubscribe("FinalTranscript", self._on_final_transcript)
+            old_bus.unsubscribe("StateChanged", self._on_state_changed)
+            old_bus.unsubscribe("ErrorOccurred", self._on_error)
         bus.subscribe("PartialTranscript", self._on_partial_transcript)
         bus.subscribe("FinalTranscript", self._on_final_transcript)
         bus.subscribe("StateChanged", self._on_state_changed)

@@ -81,6 +81,9 @@ class SessionDbusService:
             raise DbusServiceError(f"D-Bus RequestName returned no result for {self._bus_name}")
 
         (reply_code,) = result.unpack()
+        # RequestName reply codes: 1 = PRIMARY_OWNER, 4 = ALREADY_OWNER.
+        # Anything else (2 = IN_QUEUE, 3 = EXISTS) means another process owns
+        # the name and we should not proceed.
         if reply_code not in (1, 4):
             self._connection.unregister_object(self._registration_id)
             self._registration_id = 0
@@ -142,6 +145,10 @@ class SessionDbusService:
         Gio, GLib = self._load_gi()
         if self._connection is None:
             raise DbusServiceError("D-Bus connection is not available")
+
+        # Daemon event callbacks arrive on background threads, but
+        # Gio.DBusConnection.emit_signal must run on the GLib main loop thread.
+        # GLib.idle_add schedules the emission safely without blocking the caller.
         def _emit() -> bool:
             self._emit_signal_now(signal_name, parameters, Gio, GLib)
             return GLib.SOURCE_REMOVE
@@ -164,7 +171,10 @@ class SessionDbusService:
             signal_name,
             variant,
         )
-        self._logger.info("signal emitted: %s %s", signal_name, parameters)
+        if signal_name in {"PartialTranscript", "FinalTranscript"}:
+            self._logger.info("signal emitted: %s [REDACTED]", signal_name)
+        else:
+            self._logger.info("signal emitted: %s %s", signal_name, parameters)
 
     def state_changed(self, state: str) -> None:
         """Publish a state transition."""

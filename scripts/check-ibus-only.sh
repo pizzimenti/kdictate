@@ -19,6 +19,7 @@ active_paths=(
   "$repo_dir/dictate.py"
   "$repo_dir/dictatectl.py"
   "$repo_dir/dictate_runtime.py"
+  "$repo_dir/whisper_dictate"
   "$repo_dir/systemd"
   "$repo_dir/packaging"
 )

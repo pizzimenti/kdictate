@@ -180,7 +180,7 @@ class DictationDaemon:
         with self._lock:
             self._streamed_text.append(text)
             cumulative = " ".join(self._streamed_text).strip()
-        self._logger.info("partial transcript emitted: %s", cumulative)
+        self._logger.info("partial transcript emitted (%d chars)", len(cumulative))
         self._event_sink.partial_transcript(cumulative)
 
     def _finalize_text(self) -> str:
@@ -190,7 +190,7 @@ class DictationDaemon:
             text = " ".join(self._streamed_text).strip()
             self._last_text = text
         write_last_text(self.runtime_paths.last_text_file, text)
-        self._logger.info("final transcript emitted: %s", text)
+        self._logger.info("final transcript emitted (%d chars)", len(text))
         if text:
             self._event_sink.final_transcript(text)
         return text
@@ -340,6 +340,8 @@ class DictationDaemon:
                 self._logger.info("start ignored because the daemon is already active")
                 return
             if self._transcribing:
+                # Transcription is still draining from the previous session; defer
+                # the start until _run_stop_session sets the pending-start event.
                 self._pending_start.set()
                 self._logger.info("start deferred until transcription completes")
                 return
@@ -350,8 +352,20 @@ class DictationDaemon:
             self._handles = _ThreadHandles()
             self._stop_vad.clear()
 
+        # Publish STATE_STARTING immediately so the IBus frontend and CLI can
+        # show a "starting" state during the mic-validation window.
         self._write_state(STATE_STARTING)
-        mic_name, mic_usable = self._input_device_resolver()
+        try:
+            mic_name, mic_usable = self._input_device_resolver()
+        except Exception as exc:  # noqa: BLE001
+            # Resolver raised — treat the same as an unusable device.
+            with self._lock:
+                self._starting = False
+                self._cancel_start.clear()
+            self._write_state(STATE_ERROR)
+            self._emit_error("audio_input_unavailable", str(exc))
+            self._write_state(STATE_IDLE)
+            return
         if not mic_usable:
             with self._lock:
                 self._starting = False
@@ -361,6 +375,8 @@ class DictationDaemon:
             self._emit_error("audio_input_unavailable", str(error))
             self._write_state(STATE_IDLE)
             return
+
+        # Check for a stop that arrived while mic validation was in flight.
         if self._cancel_start.is_set():
             with self._lock:
                 self._starting = False
@@ -369,6 +385,8 @@ class DictationDaemon:
             self._write_state(STATE_IDLE)
             return
 
+        # Start decode before VAD so the decode worker is ready to consume
+        # utterances the moment VAD enqueues them.
         self._handles.decode_thread = threading.Thread(
             target=self._decode_worker,
             name="whisper-dictate-decode",
@@ -381,6 +399,9 @@ class DictationDaemon:
         )
         self._handles.decode_thread.start()
         self._handles.vad_thread.start()
+
+        # Another cancellation window: stop could arrive between worker start
+        # and stream start.  Check before allocating the audio device.
         if self._cancel_start.is_set():
             self._cleanup_start_handles()
             with self._lock:
@@ -393,10 +414,16 @@ class DictationDaemon:
         try:
             stream = self._build_stream()
             self._handles.stream = stream
+
+            # Check between build and start — some backends open the device on start.
             if self._cancel_start.is_set():
                 self._cancel_pending_start()
                 return
             stream.start()
+
+            # Final race window: stop could arrive immediately after stream.start().
+            # Flip _recording inside the lock so _run_stop_session sees a consistent
+            # view — it will not act if _recording is False.
             if self._cancel_start.is_set():
                 self._cancel_pending_start()
                 return
@@ -410,6 +437,7 @@ class DictationDaemon:
             if self._cancel_start.is_set():
                 self._cancel_pending_start()
                 return
+
             write_last_text(self.runtime_paths.last_text_file, "")
             self._write_state(STATE_RECORDING)
             self._logger.info("recording started on %s", mic_name)
@@ -430,6 +458,9 @@ class DictationDaemon:
 
         with self._lock:
             if self._starting and not self._recording:
+                # A stop arrived while startup is still in flight (mic validation
+                # or stream build).  Signal cancellation and let _run_start_session
+                # clean up its own handles.
                 self._cancel_start.set()
                 self._stop_vad.set()
                 self._logger.info("stop requested while recording startup is still in progress")
@@ -437,8 +468,12 @@ class DictationDaemon:
             if not self._recording or self._transcribing:
                 self._logger.info("stop ignored because the daemon is not recording")
                 return
+            # Flip flags and grab the stream reference under the lock so
+            # _run_start_session's final _recording assignment sees a consistent view.
             self._recording = False
             self._transcribing = True
+            # _write_state calls the event sink via GLib.idle_add so holding
+            # the RLock here is safe — no re-entrant lock acquisition occurs.
             self._write_state(STATE_TRANSCRIBING)
             stream = self._handles.stream
             self._handles.stream = None
@@ -446,6 +481,8 @@ class DictationDaemon:
         self._close_stream(stream)
         self._stop_vad.set()
 
+        # Wait for VAD first (it enqueues None to signal decode when done),
+        # then wait for decode to drain the utterance queue fully.
         self._join_worker(self._handles.vad_thread, "vad", timeout=None, require_exit=True)
         self._join_worker(self._handles.decode_thread, "decode", timeout=None, require_exit=True)
         self._handles.vad_thread = None
@@ -459,6 +496,7 @@ class DictationDaemon:
         if not final_text:
             self._logger.info("no speech detected")
 
+        # If a start request arrived while transcription was draining, honour it now.
         if self._pending_start.is_set():
             self._pending_start.clear()
             self.request_start()

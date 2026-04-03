@@ -85,24 +85,19 @@ On KDE Plasma, `io.github.pizzimenti.WhisperDictateToggle.desktop` can be bound 
 
 ## Architecture
 
-- `dictate.py`: long-lived daemon that keeps the Whisper model warm, owns microphone capture/transcription, and publishes transcript/state events.
-- `dictatectl.py`: stdlib control plane for `start`, `stop`, `toggle`, `status`, and `last-text`.
-- `whisper_dictate/`: shared package for constants, exceptions, logging, and D-Bus contract scaffolding.
-- `dictate_runtime.py`: shared runtime-path, daemon-state, and signaling helpers used by the daemon and control helpers.
-- `desktop_actions.py`: shared notification helpers for desktop side effects.
+- `dictate.py` (`whisper_dictate/core/daemon.py`): long-lived daemon that keeps the Whisper model warm, owns microphone capture, VAD segmentation, transcription, and publishes state/transcript events over session D-Bus.
+- `ibus_engine.py` (`whisper_dictate/ibus_engine/`): IBus engine process that subscribes to daemon D-Bus signals and maps them to IBus preedit/commit. This is the **only** path allowed to place text into applications.
+- `dictatectl.py` (`whisper_dictate/cli/dictatectl.py`): stdlib D-Bus control plane for `start`, `stop`, `toggle`, `status`, and `last-text`. Use this from a terminal or bind it to a global shortcut.
+- `whisper_dictate/`: package providing constants, exceptions, logging, D-Bus API definition, and the service/IBus/CLI subpackages.
 
 ### Runtime files
 
 The daemon and helpers coordinate through two files under `XDG_RUNTIME_DIR`:
 
-- `whisper-dictate-<uid>.state`: current daemon state (`idle`, `recording`, or `transcribing`)
+- `whisper-dictate-<uid>.state`: current daemon state (`idle`, `starting`, `recording`, `transcribing`, or `error`)
 - `whisper-dictate-<uid>.last.txt`: latest completed transcript
 
 `dictate.py` owns writes to those files. `dictatectl.py` reads them so control/status behavior stays consistent across shells and user services.
-
-### Helper scripts
-
-`ptt-press.sh`, `ptt-release.sh`, and `toggle.sh` are now thin wrappers around `dictatectl.py`, so there is only one control-plane implementation to maintain.
 
 ## Tuning
 
@@ -111,8 +106,8 @@ The daemon and helpers coordinate through two files under `XDG_RUNTIME_DIR`:
 - `--compute-type int8|float16|float32`: precision/runtime tradeoff.
 - `--language`: defaults to `en`.
 - `--beam-size`: daemon and live CLI default to 1.
-- `--state-file`: daemon runtime state file shared by `dictate.py`, `dictatectl.py`, and the helper scripts.
-- `--last-text-file`: latest transcript file shared by `dictate.py` and `dictatectl.py`.
+- `--state-file`: daemon runtime state file path (default: `$XDG_RUNTIME_DIR/whisper-dictate-<uid>.state`).
+- `--last-text-file`: latest transcript cache path (default: `$XDG_RUNTIME_DIR/whisper-dictate-<uid>.last.txt`).
 - `--vad-filter/--no-vad-filter`: daemon defaults to `vad_filter=False` for lower-latency short-form dictation.
 - `--condition-on-previous-text/--no-condition-on-previous-text`: daemon defaults to `False` to reduce cascading hallucinations.
 - `--no-speech-threshold`: Whisper-side non-speech rejection. The daemon defaults to `0.6`.
@@ -126,23 +121,25 @@ The daemon and helpers coordinate through two files under `XDG_RUNTIME_DIR`:
 - `install.sh`: install dependencies, register the user service, and install the D-Bus and IBus metadata (Arch/Manjaro).
 - `prepare_model.py`: download and convert the model.
 - `mic_realtime.py`: live terminal transcription.
-- `dictate.py`: system-wide dictation daemon.
-- `dictate_runtime.py`: shared runtime-path, state-file, and daemon-signaling helpers.
-- `desktop_actions.py`: shared desktop notification helpers.
+- `dictate.py`: system-wide dictation daemon entrypoint.
 - `dictatectl.py`: terminal control helper for `start`, `stop`, `toggle`, `status`, and `last-text`.
+- `ibus_engine.py`: IBus engine process entrypoint (launched by `ibus-daemon` via the installed launcher).
+- `dictate_runtime.py`: compatibility re-export shim for `whisper_dictate.runtime`.
+- `whisper_common.py`: shared audio pipeline helpers (VAD, model loading, transcription).
+- `runtime_profile.py`: CPU thread and compute-type selection helpers.
+- `whisper_dictate/`: core package — D-Bus contract, daemon logic, IBus frontend, CLI, and runtime utilities.
 - `systemd/io.github.pizzimenti.WhisperDictate.service`: systemd user unit for the core daemon.
-- `packaging/io.github.pizzimenti.WhisperDictate.service`: D-Bus activation file for the daemon.
+- `packaging/io.github.pizzimenti.WhisperDictate.service`: D-Bus session activation file (delegates to the systemd unit via `SystemdService=`).
+- `packaging/io.github.pizzimenti.WhisperDictate.xml`: D-Bus introspection XML published on the session bus.
 - `packaging/io.github.pizzimenti.WhisperDictate.component.xml`: IBus component metadata for the engine frontend.
-- `packaging/ibus-engine-whisper-dictate`: launcher template installed for IBus to execute the frontend.
-- `ibus_engine.py`: top-level compatibility entrypoint for the IBus engine process.
-- `scripts/check-ibus-only.sh`: smoke check for forbidden injector and clipboard backends.
-- `ptt-press.sh`: push-to-talk press wrapper around `dictatectl.py start --no-wait`.
-- `ptt-release.sh`: push-to-talk release wrapper around `dictatectl.py stop --no-wait`.
-- `toggle.sh`: fallback toggle wrapper around `dictatectl.py toggle --no-wait`.
+- `packaging/ibus-engine-whisper-dictate`: launcher template installed as `~/.local/bin/ibus-engine-whisper-dictate` for IBus to execute the frontend.
+- `packaging/io.github.pizzimenti.WhisperDictateToggle.desktop`: hidden KDE application entry that binds `Ctrl+Space` to `dictatectl.py toggle --no-wait`.
+- `packaging/60-whisper-dictate-ibus.conf`: `environment.d` snippet that adds the per-user IBus component directory to `IBUS_COMPONENT_PATH` and sets `XMODIFIERS=@im=ibus`.
+- `packaging/whisper-dictate-plasma-wayland.sh`: Plasma session env script that unsets `GTK_IM_MODULE` and `QT_IM_MODULE` to let the compositor-backed IBus Wayland path handle native clients.
+- `scripts/check-ibus-only.sh`: regression check for forbidden injector and clipboard backends.
 - `transcribe.py`: transcribe an audio file.
 - `benchmark.py`: latency and RTF benchmarking.
-- `eval/sweep.py`: run the current `distil-medium-en` tuning matrix and save per-config transcripts, timings, and WER results.
-- `runtime_profile.py`: shared CPU/runtime helpers.
+- `eval/sweep.py`: run the tuning sweep matrix and save per-config transcripts, timings, and WER results.
 
 ## Evaluation
 

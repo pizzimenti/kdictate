@@ -16,6 +16,11 @@ class FakeVariant:
         return self._values
 
 
+class _FakeAsyncResult:
+    def __init__(self, result: object) -> None:
+        self.result = result
+
+
 class FakeConnection:
     def __init__(self) -> None:
         self.subscriptions: list[tuple] = []
@@ -32,9 +37,20 @@ class FakeConnection:
     def signal_unsubscribe(self, subscription_id: int) -> None:
         self.unsubscribed.append(subscription_id)
 
-    def call_sync(self, *args):
+    def call(self, *args) -> None:
+        self.calls.append(args[:9])
+        callback = args[9] if len(args) > 9 else None
+        user_data = args[10] if len(args) > 10 else None
+        self._last_call_result = FakeVariant((STATE_RECORDING,))
+        if callback is not None:
+            callback(self, _FakeAsyncResult(self._last_call_result), user_data)
+
+    def call_sync(self, *args) -> FakeVariant:
         self.calls.append(args)
         return FakeVariant((STATE_RECORDING,))
+
+    def call_finish(self, async_result: object) -> object:
+        return async_result.result  # type: ignore[attr-defined]
 
 
 class FakeAdapter:
@@ -74,7 +90,7 @@ class DaemonSignalBridgeTest(unittest.TestCase):
         self.controller.enable()
         self.controller.focus_in()
 
-        callback = self.connection.subscriptions[1][6]
+        callback = next(args[6] for args in self.connection.subscriptions if args[2] == "PartialTranscript")
         callback(
             self.connection,
             "sender",
