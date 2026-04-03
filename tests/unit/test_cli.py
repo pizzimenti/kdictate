@@ -4,6 +4,7 @@ import io
 import unittest
 from contextlib import redirect_stdout
 
+from whisper_dictate.exceptions import DbusServiceError
 from whisper_dictate.cli.dictatectl import DbusControlClient, _handle_start, _handle_stop, _handle_toggle
 
 
@@ -60,3 +61,22 @@ class CliTest(unittest.TestCase):
             rc = _handle_toggle(client, timeout=0.1, wait=True)
         self.assertEqual(rc, 0)
         self.assertIn("recording", buf.getvalue())
+
+    def test_dbus_client_translates_transport_errors(self) -> None:
+        class FakeProxy:
+            def call_sync(self, *args, **kwargs):
+                raise RuntimeError("unavailable")
+
+        class FakeGio:
+            class DBusCallFlags:
+                NONE = object()
+
+        class FakeGLib:
+            Variant = staticmethod(lambda _sig, value: value)
+
+        client = DbusControlClient()
+        client._proxy = FakeProxy()
+        client._load_gi = lambda: (FakeGio, FakeGLib)  # type: ignore[method-assign]
+
+        with self.assertRaises(DbusServiceError):
+            client.get_state()

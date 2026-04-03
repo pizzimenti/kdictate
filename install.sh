@@ -6,6 +6,8 @@ SELF="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
 SERVICE_NAME="io.github.pizzimenti.WhisperDictate.service"
 DBUS_SERVICE_NAME="io.github.pizzimenti.WhisperDictate1.service"
 IBUS_COMPONENT_NAME="io.github.pizzimenti.WhisperDictate.component.xml"
+ENGINE_LAUNCHER_NAME="ibus-engine-whisper-dictate"
+ENGINE_LAUNCHER_TEMPLATE="${SCRIPT_DIR}/packaging/${ENGINE_LAUNCHER_NAME}"
 
 log() {
     printf '%s\n' "==> $*"
@@ -31,11 +33,13 @@ run_as_user() {
 install_rendered_file() {
     local source_file="$1"
     local destination_file="$2"
+    local mode="${3:-0644}"
     local parent_dir
 
     parent_dir="$(dirname "$destination_file")"
     run_as_user mkdir -p "$parent_dir"
-    run_as_user bash -lc "sed 's|@@REPO_DIR@@|${SCRIPT_DIR}|g' '$source_file' > '$destination_file'"
+    run_as_user bash -lc "sed -e 's|@@REPO_DIR@@|${REPO_DIR_ESCAPED}|g' -e 's|@@ENGINE_EXEC@@|${ENGINE_EXEC_ESCAPED}|g' '$source_file' > '$destination_file'"
+    run_as_user chmod "$mode" "$destination_file"
 }
 
 install_copied_file() {
@@ -56,6 +60,10 @@ if [[ -n "${PKEXEC_UID:-}" ]]; then
     HOME="$(getent passwd "$PKEXEC_UID" | cut -d: -f6)"
     export HOME
 fi
+
+ENGINE_LAUNCHER_PATH="${HOME}/.local/bin/${ENGINE_LAUNCHER_NAME}"
+REPO_DIR_ESCAPED="$(printf '%s' "$SCRIPT_DIR" | sed -e 's/[&|\\]/\\&/g')"
+ENGINE_EXEC_ESCAPED="$(printf '%s' "$ENGINE_LAUNCHER_PATH" | sed -e 's/[&|\\]/\\&/g')"
 
 require_command pacman
 require_command python3
@@ -86,9 +94,15 @@ install_rendered_file \
     "$HOME/.local/share/dbus-1/services/$DBUS_SERVICE_NAME"
 
 log "Installing IBus component metadata"
-install_copied_file \
+install_rendered_file \
     "$SCRIPT_DIR/packaging/$IBUS_COMPONENT_NAME" \
     "$HOME/.local/share/ibus/component/$IBUS_COMPONENT_NAME"
+
+log "Installing IBus engine launcher"
+install_rendered_file \
+    "$ENGINE_LAUNCHER_TEMPLATE" \
+    "$ENGINE_LAUNCHER_PATH" \
+    0755
 
 log "Reloading the user systemd manager"
 run_as_user systemctl --user daemon-reload
@@ -99,6 +113,8 @@ echo "Done."
 echo "  Systemd user service: $SERVICE_NAME"
 echo "  D-Bus activation name: io.github.pizzimenti.WhisperDictate1"
 echo "  IBus component metadata: $IBUS_COMPONENT_NAME"
+echo "  IBus engine launcher: $ENGINE_LAUNCHER_PATH"
 echo
 echo "Select the Whisper Dictate engine from IBus after the frontend is installed."
+echo "If the engine does not appear immediately, restart IBus or sign out and back in."
 echo "The core daemon now stays on the transcription side of the boundary only."

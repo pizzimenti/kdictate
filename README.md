@@ -44,7 +44,7 @@ On Arch/Manjaro, `install.sh` handles the bootstrap path automatically:
 bash install.sh
 ```
 
-It installs `ibus`, sets up the Python environment, registers the `io.github.pizzimenti.WhisperDictate.service` systemd user unit, installs the D-Bus activation file, and places the IBus component metadata under the current user's data directory.
+It installs `ibus`, sets up the Python environment, registers the `io.github.pizzimenti.WhisperDictate.service` systemd user unit, installs the D-Bus activation file, places the IBus component metadata under the current user's data directory, and installs the IBus engine launcher at `~/.local/bin/ibus-engine-whisper-dictate`.
 
 To start the daemon manually instead:
 
@@ -80,6 +80,7 @@ After the IBus frontend is installed, enable it the same way you would any other
 3. Select it in the input method switcher when you want dictation text to flow into the focused application.
 
 The daemon never inserts text directly. Partial transcript should appear as preedit and final transcript should be committed by the IBus frontend only.
+If the engine does not appear immediately after install, restart IBus or sign out and back in so the new component metadata is reloaded.
 
 ## Architecture
 
@@ -131,6 +132,8 @@ The daemon and helpers coordinate through two files under `XDG_RUNTIME_DIR`:
 - `systemd/io.github.pizzimenti.WhisperDictate.service`: systemd user unit for the core daemon.
 - `packaging/io.github.pizzimenti.WhisperDictate.service`: D-Bus activation file for the daemon.
 - `packaging/io.github.pizzimenti.WhisperDictate.component.xml`: IBus component metadata for the engine frontend.
+- `packaging/ibus-engine-whisper-dictate`: launcher template installed for IBus to execute the frontend.
+- `ibus_engine.py`: top-level compatibility entrypoint for the IBus engine process.
 - `scripts/check-ibus-only.sh`: smoke check for forbidden injector and clipboard backends.
 - `ptt-press.sh`: push-to-talk press wrapper around `dictatectl.py start --no-wait`.
 - `ptt-release.sh`: push-to-talk release wrapper around `dictatectl.py stop --no-wait`.

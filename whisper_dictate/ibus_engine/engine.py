@@ -6,14 +6,14 @@ import logging
 from types import ModuleType
 from typing import Any, Callable
 
-from whisper_dictate.constants import DBUS_BUS_NAME
+from whisper_dictate.constants import DBUS_BUS_NAME, DBUS_INTERFACE
 from whisper_dictate.exceptions import IbusEngineError
 from whisper_dictate.logging_utils import configure_logging
 from whisper_dictate.ibus_engine.controller import DictationEngineController, EngineAdapter
 from whisper_dictate.ibus_engine.dbus_client import DaemonSignalBridge
 
-ENGINE_NAME = "io.github.pizzimenti.WhisperDictate.dictation"
-ENGINE_OBJECT_PATH = "/io/github/pizzimenti/WhisperDictate/dictation"
+ENGINE_NAME = DBUS_INTERFACE
+ENGINE_OBJECT_PATH = "/io/github/pizzimenti/WhisperDictate1/engine"
 LOGGER_NAME = "whisper_dictate.ibus"
 
 

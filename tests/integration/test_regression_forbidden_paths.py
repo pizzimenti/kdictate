@@ -9,7 +9,11 @@ import unittest
 FORBIDDEN_TOKENS = ("ydotool", "dotool", "wtype", "wl-copy", "xdotool")
 ALLOWED_SUFFIXES = {".py", ".sh", ".xml", ".service", ".desktop", ".md"}
 ACTIVE_PATHS = (
+    Path("ibus_engine.py"),
     Path("install.sh"),
+    Path("dictate.py"),
+    Path("dictatectl.py"),
+    Path("dictate_runtime.py"),
     Path("systemd"),
     Path("whisper_dictate"),
     Path("packaging"),

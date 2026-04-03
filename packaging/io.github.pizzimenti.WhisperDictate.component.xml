@@ -2,7 +2,7 @@
 <component>
   <name>io.github.pizzimenti.WhisperDictate</name>
   <description>Whisper Dictate IBus component metadata</description>
-  <exec>ibus-engine-whisper-dictate</exec>
+  <exec>@@ENGINE_EXEC@@</exec>
   <author>OpenAI Codex</author>
   <license>MIT</license>
   <homepage>https://github.com/pizzimenti/whisper-dictate</homepage>

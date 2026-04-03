@@ -37,12 +37,12 @@ class SessionDbusService:
         self._node_info = None
         self._interface_info = None
         self._registration_id = 0
-        self._owner_id = 0
+        self._owns_bus_name = False
 
     def start(self) -> None:
         """Acquire the bus name and register the D-Bus object."""
 
-        Gio, _GLib = self._load_gi()
+        Gio, GLib = self._load_gi()
         self._connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         self._node_info = Gio.DBusNodeInfo.new_for_xml(DBUS_INTROSPECTION_XML)
         self._interface_info = self._node_info.interfaces[0]
@@ -53,25 +53,74 @@ class SessionDbusService:
             None,
             None,
         )
-        self._owner_id = Gio.bus_own_name_on_connection(
-            self._connection,
-            self._bus_name,
-            Gio.BusNameOwnerFlags.NONE,
-            None,
-            None,
-        )
+        if not self._registration_id:
+            raise DbusServiceError(f"Failed to register D-Bus object at {self._object_path}")
+
+        try:
+            result = self._connection.call_sync(
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "RequestName",
+                GLib.Variant("(su)", (self._bus_name, 0)),
+                GLib.VariantType("(u)"),
+                Gio.DBusCallFlags.NONE,
+                5000,
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._connection.unregister_object(self._registration_id)
+            self._registration_id = 0
+            self._connection = None
+            raise DbusServiceError(f"Failed to acquire D-Bus name {self._bus_name}: {exc}") from exc
+
+        if result is None:
+            self._connection.unregister_object(self._registration_id)
+            self._registration_id = 0
+            self._connection = None
+            raise DbusServiceError(f"D-Bus RequestName returned no result for {self._bus_name}")
+
+        (reply_code,) = result.unpack()
+        if reply_code not in (1, 4):
+            self._connection.unregister_object(self._registration_id)
+            self._registration_id = 0
+            self._connection = None
+            raise DbusServiceError(f"Failed to own D-Bus name {self._bus_name} (reply={reply_code})")
+
+        self._owns_bus_name = True
         self._logger.info("owned D-Bus name %s", self._bus_name)
+
+    def _release_bus_name(self, Gio: Any, GLib: Any) -> None:
+        """Release the session bus name if it was successfully acquired."""
+
+        if self._connection is None or not self._owns_bus_name:
+            return
+
+        try:
+            self._connection.call_sync(
+                "org.freedesktop.DBus",
+                "/org/freedesktop/DBus",
+                "org.freedesktop.DBus",
+                "ReleaseName",
+                GLib.Variant("(s)", (self._bus_name,)),
+                GLib.VariantType("(u)"),
+                Gio.DBusCallFlags.NONE,
+                5000,
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._logger.warning("failed to release D-Bus name %s: %s", self._bus_name, exc)
+        finally:
+            self._owns_bus_name = False
 
     def stop(self) -> None:
         """Release the bus name and unregister the D-Bus object."""
 
-        Gio, _GLib = self._load_gi()
+        Gio, GLib = self._load_gi()
+        self._release_bus_name(Gio, GLib)
         if self._connection is not None and self._registration_id:
             self._connection.unregister_object(self._registration_id)
-        if self._owner_id:
-            Gio.bus_unown_name(self._owner_id)
         self._registration_id = 0
-        self._owner_id = 0
         self._connection = None
 
     def _load_gi(self):

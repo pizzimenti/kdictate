@@ -49,16 +49,21 @@ class DbusControlClient:
         if self._proxy is not None or self._call_sync is not None:
             return self._proxy
         Gio, _GLib = self._load_gi()
-        connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
-        self._proxy = Gio.DBusProxy.new_sync(
-            connection,
-            Gio.DBusProxyFlags.NONE,
-            None,
-            self._bus_name,
-            self._object_path,
-            self._interface_name,
-            None,
-        )
+        try:
+            connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+            self._proxy = Gio.DBusProxy.new_sync(
+                connection,
+                Gio.DBusProxyFlags.NONE,
+                None,
+                self._bus_name,
+                self._object_path,
+                self._interface_name,
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise DbusServiceError(
+                f"Unable to connect to {self._bus_name} on the session bus: {exc}"
+            ) from exc
         return self._proxy
 
     def call(self, method_name: str) -> tuple[Any, ...]:
@@ -78,13 +83,18 @@ class DbusControlClient:
             variant = None
         else:
             variant = GLib.Variant("()", ())
-        result = proxy.call_sync(
-            method_name,
-            variant,
-            Gio.DBusCallFlags.NONE,
-            5000,
-            None,
-        )
+        try:
+            result = proxy.call_sync(
+                method_name,
+                variant,
+                Gio.DBusCallFlags.NONE,
+                5000,
+                None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise DbusServiceError(
+                f"D-Bus method {method_name} failed against {self._bus_name}: {exc}"
+            ) from exc
         return tuple(result.unpack() if result is not None else ())
 
     def start(self) -> None:

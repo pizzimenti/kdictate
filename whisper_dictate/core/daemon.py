@@ -72,6 +72,10 @@ class _ThreadHandles:
     stream: Any | None = None
 
 
+class _WorkerJoinTimeoutError(RuntimeError):
+    """Raised when a worker fails to stop within the expected window."""
+
+
 def load_model(config: DictationConfig) -> tuple[Any, dict[str, Any]]:
     """Load the configured faster-whisper model and runtime profile."""
 
@@ -202,6 +206,24 @@ class DictationDaemon:
                 method()
             except Exception:  # noqa: BLE001
                 self._logger.exception("stream %s failed", method_name)
+
+    def _join_worker(
+        self,
+        thread: threading.Thread | None,
+        name: str,
+        *,
+        timeout: float | None,
+        require_exit: bool,
+    ) -> None:
+        """Join a worker thread and optionally require that it exits."""
+
+        if thread is None:
+            return
+
+        self._logger.info("waiting for %s worker to exit", name)
+        thread.join(timeout=timeout)
+        if require_exit and thread.is_alive():
+            raise _WorkerJoinTimeoutError(f"{name} worker did not exit cleanly")
 
     def _build_stream(self) -> Any:
         """Build the input stream using the configured or default factory."""
@@ -336,8 +358,11 @@ class DictationDaemon:
             self._stop_vad.set()
             self._close_stream(self._handles.stream)
             self._handles.stream = None
-            self._handles.vad_thread.join(timeout=5)
-            self._handles.decode_thread.join(timeout=5)
+            try:
+                self._join_worker(self._handles.vad_thread, "vad", timeout=5.0, require_exit=True)
+                self._join_worker(self._handles.decode_thread, "decode", timeout=5.0, require_exit=True)
+            except _WorkerJoinTimeoutError as join_exc:
+                self._logger.error("%s", join_exc)
             with self._lock:
                 self._recording = False
                 self._transcribing = False
@@ -360,10 +385,10 @@ class DictationDaemon:
         self._close_stream(stream)
         self._stop_vad.set()
 
-        if self._handles.vad_thread is not None:
-            self._handles.vad_thread.join(timeout=10)
-        if self._handles.decode_thread is not None:
-            self._handles.decode_thread.join(timeout=10)
+        self._join_worker(self._handles.vad_thread, "vad", timeout=None, require_exit=True)
+        self._join_worker(self._handles.decode_thread, "decode", timeout=None, require_exit=True)
+        self._handles.vad_thread = None
+        self._handles.decode_thread = None
 
         final_text = self._finalize_text()
         self._write_state(STATE_IDLE)
@@ -426,10 +451,11 @@ class DictationDaemon:
             self._recording = False
             self._transcribing = False
         self._close_stream(self._handles.stream)
-        if self._handles.vad_thread is not None:
-            self._handles.vad_thread.join(timeout=5)
-        if self._handles.decode_thread is not None:
-            self._handles.decode_thread.join(timeout=5)
+        try:
+            self._join_worker(self._handles.vad_thread, "vad", timeout=5.0, require_exit=False)
+            self._join_worker(self._handles.decode_thread, "decode", timeout=5.0, require_exit=False)
+        except _WorkerJoinTimeoutError:
+            pass
         self._write_state(STATE_IDLE)
 
 

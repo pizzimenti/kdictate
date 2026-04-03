@@ -44,6 +44,17 @@ class _DummyStream:
         self.closed = True
 
 
+class _DummyThread:
+    def __init__(self) -> None:
+        self.join_timeouts: list[float | None] = []
+
+    def join(self, timeout: float | None = None) -> None:
+        self.join_timeouts.append(timeout)
+
+    def is_alive(self) -> bool:
+        return False
+
+
 def _make_config(runtime_paths: RuntimePaths) -> DictationConfig:
     return DictationConfig(
         model_dir=Path("."),
@@ -129,3 +140,29 @@ class DictationDaemonTest(unittest.TestCase):
             self.assertIn(("state", STATE_ERROR), sink.events)
             self.assertIn(("state", STATE_IDLE), sink.events)
             self.assertTrue(any(event[0] == "error" and event[1][0] == "audio_input_unavailable" for event in sink.events))
+
+    def test_stop_waits_for_decode_worker_without_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_paths = RuntimePaths(
+                state_file=Path(tmpdir) / "state",
+                last_text_file=Path(tmpdir) / "last",
+            )
+            daemon = DictationDaemon(
+                _make_config(runtime_paths),
+                model=object(),
+                runtime_paths=runtime_paths,
+                event_sink=_RecordingEventSink(events=[]),
+                stream_factory=lambda **kwargs: _DummyStream(),
+                input_device_resolver=lambda: ("microphone", True),
+            )
+            daemon._recording = True
+            daemon._handles.stream = _DummyStream()
+            vad_thread = _DummyThread()
+            decode_thread = _DummyThread()
+            daemon._handles.vad_thread = vad_thread  # type: ignore[assignment]
+            daemon._handles.decode_thread = decode_thread  # type: ignore[assignment]
+
+            daemon._run_stop_session()
+
+            self.assertEqual(vad_thread.join_timeouts, [None])
+            self.assertEqual(decode_thread.join_timeouts, [None])
