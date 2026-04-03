@@ -111,7 +111,6 @@ The daemon and helpers coordinate through two files under `XDG_RUNTIME_DIR`:
 - `--beam-size`: daemon and live CLI default to 1.
 - `--state-file`: daemon runtime state file shared by `dictate.py`, `dictatectl.py`, and the helper scripts.
 - `--last-text-file`: latest transcript file shared by `dictate.py` and `dictatectl.py`.
-- `--type-output/--no-type-output`: legacy daemon-side typing toggle; the IBus-only path uses `--no-type-output`.
 - `--vad-filter/--no-vad-filter`: daemon defaults to `vad_filter=False` for lower-latency short-form dictation.
 - `--condition-on-previous-text/--no-condition-on-previous-text`: daemon defaults to `False` to reduce cascading hallucinations.
 - `--no-speech-threshold`: Whisper-side non-speech rejection. The daemon defaults to `0.6`.

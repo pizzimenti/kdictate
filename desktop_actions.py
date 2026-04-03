@@ -5,7 +5,7 @@ from __future__ import annotations
 import subprocess
 
 
-DEFAULT_APP_NAME = "whisper-dictate"
+DEFAULT_APP_NAME = "io.github.pizzimenti.WhisperDictate"
 DEFAULT_NOTIFY_TIMEOUT_MS = 3000
 
 def _gdbus_notify(message: str, replace_id: int = 0, timeout_ms: int = DEFAULT_NOTIFY_TIMEOUT_MS, app_name: str = DEFAULT_APP_NAME) -> int:

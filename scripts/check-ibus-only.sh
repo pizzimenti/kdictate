@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Active scope:
+# - README.md
+# - install.sh
+# - desktop_actions.py
+# - systemd/**
+# - packaging/**
+
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 active_paths=(
   "$repo_dir/README.md"
