@@ -311,7 +311,22 @@ class DictationDaemon:
         """Transcribe each utterance and publish cumulative partial text."""
 
         while True:
-            item = self._utterance_queue.get()
+            try:
+                item = self._utterance_queue.get(timeout=1.0)
+            except queue.Empty:
+                # Defensive exit: if a stop has been requested and the VAD
+                # worker is no longer alive, the sentinel will never arrive
+                # (e.g. VAD raised before reaching its put(None)). Break out
+                # so the decode thread does not wedge _run_stop_session.
+                if self._stop_vad.is_set():
+                    vad_thread = self._handles.vad_thread
+                    if vad_thread is None or not vad_thread.is_alive():
+                        self._logger.warning(
+                            "decode worker exiting without sentinel "
+                            "(vad worker not alive after stop)"
+                        )
+                        break
+                continue
             if item is None:
                 break
             pcm_chunks, _audio_seconds = item
@@ -482,11 +497,41 @@ class DictationDaemon:
         self._stop_vad.set()
 
         # Wait for VAD first (it enqueues None to signal decode when done),
-        # then wait for decode to drain the utterance queue fully.
-        self._join_worker(self._handles.vad_thread, "vad", timeout=None, require_exit=True)
-        self._join_worker(self._handles.decode_thread, "decode", timeout=None, require_exit=True)
+        # then wait for decode to drain the utterance queue fully. Both joins
+        # are bounded so a wedged decode worker (e.g. a CTranslate2 / OpenMP
+        # internal deadlock under SIGTERM races) cannot leave the daemon
+        # stuck in STATE_TRANSCRIBING — every subsequent Start/Stop/Toggle
+        # would be silently rejected.
+        join_timeout = 30.0
+        self._join_worker(self._handles.vad_thread, "vad", timeout=join_timeout, require_exit=False)
+        self._join_worker(self._handles.decode_thread, "decode", timeout=join_timeout, require_exit=False)
+
+        vad_thread = self._handles.vad_thread
+        decode_thread = self._handles.decode_thread
+        vad_alive = vad_thread is not None and vad_thread.is_alive()
+        decode_alive = decode_thread is not None and decode_thread.is_alive()
         self._handles.vad_thread = None
         self._handles.decode_thread = None
+
+        if vad_alive or decode_alive:
+            stuck = []
+            if vad_alive:
+                stuck.append("vad")
+            if decode_alive:
+                stuck.append("decode")
+            self._emit_error(
+                "worker_join_timeout",
+                f"Worker(s) did not exit within {int(join_timeout)}s: {', '.join(stuck)}",
+            )
+            self._write_state(STATE_ERROR)
+            # Force back to IDLE so the daemon does not stay wedged. The
+            # leaked worker(s) are still daemon=True, so process exit will
+            # eventually clean them up.
+            self._write_state(STATE_IDLE)
+            with self._lock:
+                self._transcribing = False
+            self._pending_start.clear()
+            return
 
         final_text = self._finalize_text()
         self._write_state(STATE_IDLE)

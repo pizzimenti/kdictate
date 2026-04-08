@@ -72,14 +72,15 @@ class _CancelOnStartStream(_DummyStream):
 
 
 class _DummyThread:
-    def __init__(self) -> None:
+    def __init__(self, *, alive_after_join: bool = False) -> None:
         self.join_timeouts: list[float | None] = []
+        self._alive_after_join = alive_after_join
 
     def join(self, timeout: float | None = None) -> None:
         self.join_timeouts.append(timeout)
 
     def is_alive(self) -> bool:
-        return False
+        return self._alive_after_join
 
 
 def _make_config(runtime_paths: RuntimePaths) -> DictationConfig:
@@ -274,7 +275,7 @@ class DictationDaemonTest(unittest.TestCase):
             self.assertEqual(read_state(runtime_paths.state_file), STATE_IDLE)
             self.assertNotIn(("state", STATE_RECORDING), sink.events)
 
-    def test_stop_waits_for_decode_worker_without_timeout(self) -> None:
+    def test_stop_joins_workers_with_bounded_timeout(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime_paths = RuntimePaths(
                 state_file=Path(tmpdir) / "state",
@@ -297,8 +298,51 @@ class DictationDaemonTest(unittest.TestCase):
 
             daemon._run_stop_session()
 
-            self.assertEqual(vad_thread.join_timeouts, [None])
-            self.assertEqual(decode_thread.join_timeouts, [None])
+            self.assertEqual(vad_thread.join_timeouts, [30.0])
+            self.assertEqual(decode_thread.join_timeouts, [30.0])
+            self.assertEqual(daemon.get_state(), STATE_IDLE)
+
+    def test_stop_recovers_to_idle_when_decode_worker_does_not_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            runtime_paths = RuntimePaths(
+                state_file=Path(tmpdir) / "state",
+                last_text_file=Path(tmpdir) / "last",
+            )
+            sink = _RecordingEventSink(events=[])
+            daemon = DictationDaemon(
+                _make_config(runtime_paths),
+                model=object(),
+                runtime_paths=runtime_paths,
+                event_sink=sink,
+                stream_factory=lambda **kwargs: _DummyStream(),
+                input_device_resolver=lambda: ("microphone", True),
+            )
+            daemon._recording = True
+            daemon._handles.stream = _DummyStream()
+            # Decode worker remains alive after join — simulates a wedged
+            # CTranslate2 / OpenMP deadlock that the old timeout=None code
+            # would have left blocked forever in STATE_TRANSCRIBING.
+            wedged_decode = _DummyThread(alive_after_join=True)
+            daemon._handles.vad_thread = _DummyThread()  # type: ignore[assignment]
+            daemon._handles.decode_thread = wedged_decode  # type: ignore[assignment]
+
+            daemon._run_stop_session()
+
+            # Daemon must not stay wedged in STATE_TRANSCRIBING; it should
+            # surface a worker_join_timeout error and force back to IDLE so
+            # subsequent Start/Stop calls are accepted.
+            self.assertEqual(daemon.get_state(), STATE_IDLE)
+            self.assertEqual(read_state(runtime_paths.state_file), STATE_IDLE)
+            self.assertFalse(daemon._transcribing)
+            self.assertIn(("state", STATE_TRANSCRIBING), sink.events)
+            self.assertIn(("state", STATE_ERROR), sink.events)
+            self.assertIn(("state", STATE_IDLE), sink.events)
+            self.assertTrue(
+                any(
+                    event[0] == "error" and event[1][0] == "worker_join_timeout"
+                    for event in sink.events
+                )
+            )
 
     def test_main_does_not_attach_event_sink_when_service_start_fails(self) -> None:
         events: list[str] = []
