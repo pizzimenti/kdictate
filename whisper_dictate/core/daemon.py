@@ -133,8 +133,33 @@ class DictationDaemon:
         self._pending_start = threading.Event()
         self._handles = _ThreadHandles()
 
+        # A single dedicated control-plane thread serializes start/stop
+        # requests so a rapid Ctrl+Space burst (or a misbehaving client)
+        # cannot spawn an unbounded number of threads. Each request is a
+        # Callable enqueued onto _control_queue; the worker pulls and runs
+        # them sequentially. shutdown() posts the _CONTROL_STOP sentinel.
+        self._control_queue: queue.Queue[Callable[[], None] | None] = queue.Queue()
+        self._control_thread = threading.Thread(
+            target=self._control_worker,
+            name="whisper-dictate-control",
+            daemon=True,
+        )
+        self._control_thread.start()
+
         self._write_state(STATE_IDLE)
         write_last_text(self.runtime_paths.last_text_file, "")
+
+    def _control_worker(self) -> None:
+        """Serialize start/stop requests on a single thread."""
+
+        while True:
+            task = self._control_queue.get()
+            if task is None:
+                return
+            try:
+                task()
+            except Exception:  # noqa: BLE001
+                self._logger.exception("control task failed")
 
     def set_event_sink(self, event_sink: DaemonEventSink) -> None:
         """Attach or replace the transport that receives daemon events."""
@@ -547,14 +572,14 @@ class DictationDaemon:
             self.request_start()
 
     def request_start(self) -> None:
-        """Start dictation asynchronously."""
+        """Start dictation asynchronously via the control-plane thread."""
 
-        threading.Thread(target=self._run_start_session, name="whisper-dictate-start", daemon=True).start()
+        self._control_queue.put(self._run_start_session)
 
     def request_stop(self) -> None:
-        """Stop dictation asynchronously."""
+        """Stop dictation asynchronously via the control-plane thread."""
 
-        threading.Thread(target=self._run_stop_session, name="whisper-dictate-stop", daemon=True).start()
+        self._control_queue.put(self._run_stop_session)
 
     def toggle(self) -> None:
         """Toggle between recording and idle states."""
@@ -607,6 +632,10 @@ class DictationDaemon:
             self._join_worker(self._handles.decode_thread, "decode", timeout=5.0, require_exit=False)
         except _WorkerJoinTimeoutError:
             pass
+        # Stop the control-plane thread last so any in-flight task can
+        # finish observing the cleared _recording / _starting flags above.
+        self._control_queue.put(None)
+        self._control_thread.join(timeout=5.0)
         self._write_state(STATE_IDLE)
 
 
