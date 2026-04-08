@@ -169,6 +169,14 @@ class DictationDaemon:
                 with self._lock:
                     self._starting = False
                     self._transcribing = False
+                    # _recording is reset here too for defense in depth.
+                    # _run_start_session / _run_stop_session both reset it
+                    # in their own except blocks today, but if a future
+                    # refactor lets an exception escape with _recording
+                    # still True, every subsequent Start would be silently
+                    # rejected as "daemon is already active" with no
+                    # diagnostic.
+                    self._recording = False
                 self._pending_start.clear()
                 self._cancel_start.clear()
                 try:
