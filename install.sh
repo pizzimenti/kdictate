@@ -45,7 +45,13 @@ install_rendered_file() {
 
     parent_dir="$(dirname "$destination_file")"
     run_as_user mkdir -p "$parent_dir"
-    run_as_user bash -lc "sed -e 's|@@REPO_DIR@@|${REPO_DIR_ESCAPED}|g' -e 's|@@ENGINE_EXEC@@|${ENGINE_EXEC_ESCAPED}|g' -e 's|@@HOME@@|${HOME_ESCAPED}|g' '$source_file' > '$destination_file'"
+    # Pass paths and substitution values as positional parameters so a path
+    # containing a single quote (e.g., a home directory like /home/o'brien)
+    # cannot break out of the shell quoting and inject commands into the
+    # elevated subprocess.
+    run_as_user bash -lc \
+        'sed -e "s|@@REPO_DIR@@|${1}|g" -e "s|@@ENGINE_EXEC@@|${2}|g" -e "s|@@HOME@@|${3}|g" "${4}" > "${5}"' \
+        -- "$REPO_DIR_ESCAPED" "$ENGINE_EXEC_ESCAPED" "$HOME_ESCAPED" "$source_file" "$destination_file"
     run_as_user chmod "$mode" "$destination_file"
 }
 
