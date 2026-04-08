@@ -134,8 +134,20 @@ sync_runtime
 # One-time migration of the model directory out of the source tree.
 # Skipped on subsequent runs so updates do not redownload the 3+ GB of model data.
 if [[ -d "$SCRIPT_DIR/models" && ! -e "$RUNTIME_DIR/models" ]]; then
-    log "Migrating models/ from source tree to $RUNTIME_DIR/models (one-time)"
-    run_as_user mv "$SCRIPT_DIR/models" "$RUNTIME_DIR/models"
+    if [[ -L "$SCRIPT_DIR/models" ]]; then
+        # If the user symlinked models/ (e.g., to external storage), don't
+        # `mv` the symlink — that would relocate a possibly-relative link
+        # and silently break the reference. Resolve to an absolute target,
+        # recreate the symlink at the runtime location, and remove the
+        # original. The 3+ GB of model data stays where the user put it.
+        models_target="$(readlink -f "$SCRIPT_DIR/models")"
+        log "models/ is a symlink → $models_target; recreating link at $RUNTIME_DIR/models"
+        run_as_user ln -s "$models_target" "$RUNTIME_DIR/models"
+        run_as_user rm "$SCRIPT_DIR/models"
+    else
+        log "Migrating models/ from source tree to $RUNTIME_DIR/models (one-time)"
+        run_as_user mv "$SCRIPT_DIR/models" "$RUNTIME_DIR/models"
+    fi
 fi
 
 log "Creating Python virtual environment in $RUNTIME_DIR/.venv"
