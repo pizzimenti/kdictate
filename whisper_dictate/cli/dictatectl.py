@@ -130,6 +130,103 @@ class DbusControlClient:
         result = self.call("Ping")
         return result[0] if result else "pong"
 
+    def wait_for_state(self, targets: set[str], timeout: float) -> str | None:
+        """Wait until the daemon state enters ``targets`` or ``timeout`` elapses.
+
+        Production path: subscribe to the daemon's ``StateChanged`` signal
+        on the session bus and wake on actual transitions instead of issuing
+        a ``GetState`` D-Bus round-trip every 150 ms (which can be ~133 calls
+        for a 20-second stop wait).
+
+        Test path: when ``_call_sync`` is injected (no real Gio connection),
+        fall back to a 150 ms polling loop so unit tests with synthesized
+        fakes keep working without spinning up a fake D-Bus.
+        """
+
+        if self._call_sync is not None:
+            return self._poll_for_state(targets, timeout)
+        return self._signal_wait_for_state(targets, timeout)
+
+    def _poll_for_state(self, targets: set[str], timeout: float) -> str | None:
+        """Polling fallback used when no real D-Bus connection is available."""
+
+        import time
+
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            state = self.get_state()
+            if state in targets:
+                return state
+            time.sleep(0.15)
+        state = self.get_state()
+        return state if state in targets else None
+
+    def _signal_wait_for_state(self, targets: set[str], timeout: float) -> str | None:
+        """Signal-subscription wait used in production."""
+
+        Gio, GLib = self._load_gi()
+        try:
+            connection = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        except Exception as exc:  # noqa: BLE001
+            raise DbusServiceError(
+                f"Unable to acquire session bus to wait for state: {exc}"
+            ) from exc
+
+        loop = GLib.MainLoop()
+        result: dict[str, str | None] = {"state": None}
+
+        def _on_state_signal(
+            _connection: Any,
+            _sender: str,
+            _object_path: str,
+            _interface_name: str,
+            signal_name: str,
+            params: Any,
+            _user_data: Any = None,
+        ) -> None:
+            if signal_name != "StateChanged":
+                return
+            try:
+                state = params.unpack()[0]
+            except Exception:  # noqa: BLE001
+                return
+            if state in targets:
+                result["state"] = state
+                loop.quit()
+
+        sub_id = connection.signal_subscribe(
+            self._bus_name,
+            self._interface_name,
+            "StateChanged",
+            self._object_path,
+            None,
+            Gio.DBusSignalFlags.NONE,
+            _on_state_signal,
+            None,
+        )
+
+        try:
+            # Race-fix: a transition into the target set may have already
+            # happened between the caller's last get_state() and our signal
+            # subscription. Probe once after subscribing so we never block
+            # for the full timeout on a state we already reached.
+            current = self.get_state()
+            if current in targets:
+                return current
+
+            timeout_ms = max(1, int(timeout * 1000))
+
+            def _on_timeout() -> bool:
+                loop.quit()
+                return False  # GLib.SOURCE_REMOVE
+
+            GLib.timeout_add(timeout_ms, _on_timeout)
+            loop.run()
+        finally:
+            connection.signal_unsubscribe(sub_id)
+
+        return result["state"]
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Construct the control CLI parser."""
@@ -164,7 +261,22 @@ def _print_last_text(text: str) -> int:
     return 0
 
 
-def _wait_for_state(client: DbusControlClient, targets: set[str], timeout: float) -> str | None:
+_START_OUTCOME_TARGETS = frozenset({STATE_RECORDING, STATE_TRANSCRIBING, STATE_IDLE, STATE_ERROR})
+
+
+def _wait_for_state(client: Any, targets: set[str], timeout: float) -> str | None:
+    """Wait for the daemon to reach one of ``targets`` or for ``timeout``.
+
+    Prefers ``client.wait_for_state`` when the client provides it (the real
+    DbusControlClient uses session-bus signal subscription). Falls back to a
+    150 ms polling loop for test fakes that don't implement signal
+    subscription.
+    """
+
+    waiter = getattr(client, "wait_for_state", None)
+    if waiter is not None:
+        return waiter(set(targets), timeout)
+
     import time
 
     deadline = time.monotonic() + timeout
@@ -177,13 +289,26 @@ def _wait_for_state(client: DbusControlClient, targets: set[str], timeout: float
     return state if state in targets else None
 
 
-def _wait_for_start_outcome(client: DbusControlClient, timeout: float) -> str | None:
+def _wait_for_start_outcome(client: Any, timeout: float) -> str | None:
+    """Wait for the daemon to leave STATE_STARTING."""
+
+    waiter = getattr(client, "wait_for_state", None)
+    if waiter is not None:
+        result = waiter(set(_START_OUTCOME_TARGETS), timeout)
+        # The signal-subscription path returns None on timeout; preserve the
+        # original behavior of falling back to one final get_state() probe so
+        # the caller can surface a meaningful "Unexpected daemon state"
+        # message instead of a generic timeout.
+        if result is not None:
+            return result
+        return client.get_state()
+
     import time
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         state = client.get_state()
-        if state in {STATE_RECORDING, STATE_TRANSCRIBING, STATE_IDLE, STATE_ERROR}:
+        if state in _START_OUTCOME_TARGETS:
             return state
         time.sleep(0.15)
     return client.get_state()
