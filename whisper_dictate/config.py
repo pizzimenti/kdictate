@@ -7,9 +7,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from runtime_profile import recommended_shortform_cpu_threads
-
 from whisper_dictate.runtime import RuntimePaths, default_runtime_paths
+from whisper_dictate.runtime_profile import recommended_shortform_cpu_threads
 
 
 DEFAULT_MODEL_DIR = Path(__file__).resolve().parent.parent / "models/whisper-large-v3-turbo-ct2"

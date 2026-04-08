@@ -15,13 +15,7 @@ import gi
 gi.require_version("GLib", "2.0")
 from gi.repository import GLib
 
-from whisper_dictate.config import DictationConfig, parse_args
-from whisper_dictate.constants import STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_STARTING, STATE_TRANSCRIBING
-from whisper_dictate.core.audio import resolve_default_input_device
-from whisper_dictate.exceptions import AudioInputError, ConfigurationError, TranscriptionError
-from whisper_dictate.logging_utils import configure_logging
-from whisper_dictate.runtime import RuntimePaths, write_last_text, write_state
-from whisper_common import (
+from whisper_dictate.audio_common import (
     AUDIO_QUEUE_MAXSIZE,
     UTTERANCE_QUEUE_MAXSIZE,
     VADConfig,
@@ -29,7 +23,13 @@ from whisper_common import (
     load_whisper_model,
     transcribe_pcm,
 )
-from runtime_profile import resolve_runtime, set_thread_env
+from whisper_dictate.config import DictationConfig, parse_args
+from whisper_dictate.constants import STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_STARTING, STATE_TRANSCRIBING
+from whisper_dictate.core.audio import resolve_default_input_device
+from whisper_dictate.exceptions import AudioInputError, ConfigurationError, TranscriptionError
+from whisper_dictate.logging_utils import configure_logging
+from whisper_dictate.runtime import RuntimePaths, write_last_text, write_state
+from whisper_dictate.runtime_profile import resolve_runtime, set_thread_env
 
 
 DEFAULT_MODEL_DIR = Path(__file__).resolve().parent.parent.parent / "models/whisper-large-v3-turbo-ct2"

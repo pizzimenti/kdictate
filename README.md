@@ -115,9 +115,7 @@ The daemon and helpers coordinate through two files under `XDG_RUNTIME_DIR`:
 - `dictatectl.py`: terminal control helper for `start`, `stop`, `toggle`, `status`, and `last-text`.
 - `ibus_engine.py`: IBus engine process entrypoint (launched by `ibus-daemon` via the installed launcher).
 - `dictate_runtime.py`: compatibility re-export shim for `whisper_dictate.runtime`.
-- `whisper_common.py`: shared audio pipeline helpers (VAD, model loading, transcription).
-- `runtime_profile.py`: CPU thread and compute-type selection helpers.
-- `whisper_dictate/`: core package — D-Bus contract, daemon logic, IBus frontend, CLI, and runtime utilities.
+- `whisper_dictate/`: core package — D-Bus contract, daemon logic, IBus frontend, CLI, runtime utilities, audio helpers (`whisper_dictate.audio_common`), and CPU thread / compute-type selection (`whisper_dictate.runtime_profile`).
 - `systemd/io.github.pizzimenti.WhisperDictate.service`: systemd user unit for the core daemon.
 - `packaging/io.github.pizzimenti.WhisperDictate.service`: D-Bus session activation file (delegates to the systemd unit via `SystemdService=`).
 - `packaging/io.github.pizzimenti.WhisperDictate.xml`: D-Bus introspection XML published on the session bus.

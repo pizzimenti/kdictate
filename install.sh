@@ -65,21 +65,19 @@ install_copied_file() {
     run_as_user install -m 0644 "$source_file" "$destination_file"
 }
 
-# Sync the runtime files (package + top-level modules + entry shims + requirements)
-# from the source tree into $RUNTIME_DIR. Idempotent. Does NOT touch the venv or
-# the models/ directory — those are handled separately so updates don't redownload
+# Sync the runtime files (package + entry shims + requirements) from the
+# source tree into $RUNTIME_DIR. Idempotent. Does NOT touch the venv or the
+# models/ directory — those are handled separately so updates don't redownload
 # the 3+ GB model files.
 sync_runtime() {
     run_as_user mkdir -p "$RUNTIME_DIR"
     log "Syncing source files to $RUNTIME_DIR"
     run_as_user rsync -a --delete \
         "$SCRIPT_DIR/whisper_dictate/" "$RUNTIME_DIR/whisper_dictate/"
-    run_as_user install -Dm644 "$SCRIPT_DIR/whisper_common.py"   "$RUNTIME_DIR/whisper_common.py"
-    run_as_user install -Dm644 "$SCRIPT_DIR/runtime_profile.py"  "$RUNTIME_DIR/runtime_profile.py"
-    run_as_user install -Dm644 "$SCRIPT_DIR/dictate.py"          "$RUNTIME_DIR/dictate.py"
-    run_as_user install -Dm644 "$SCRIPT_DIR/dictatectl.py"       "$RUNTIME_DIR/dictatectl.py"
-    run_as_user install -Dm644 "$SCRIPT_DIR/ibus_engine.py"      "$RUNTIME_DIR/ibus_engine.py"
-    run_as_user install -Dm644 "$SCRIPT_DIR/requirements.txt"    "$RUNTIME_DIR/requirements.txt"
+    run_as_user install -Dm644 "$SCRIPT_DIR/dictate.py"       "$RUNTIME_DIR/dictate.py"
+    run_as_user install -Dm644 "$SCRIPT_DIR/dictatectl.py"    "$RUNTIME_DIR/dictatectl.py"
+    run_as_user install -Dm644 "$SCRIPT_DIR/ibus_engine.py"   "$RUNTIME_DIR/ibus_engine.py"
+    run_as_user install -Dm644 "$SCRIPT_DIR/requirements.txt" "$RUNTIME_DIR/requirements.txt"
 }
 
 # --- argument parsing ---
