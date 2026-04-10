@@ -72,16 +72,35 @@ class InstallContext:
         }
 
 
+_TOTAL_STEPS = 13
+_current_step = 0
+
+
 def log(message: str) -> None:
     """Emit an installer progress line."""
 
-    print(f"==> {message}")
+    print(f"    {message}")
+
+
+def step(message: str) -> None:
+    """Print a numbered progress step."""
+
+    global _current_step  # noqa: PLW0603
+    _current_step += 1
+    print(f"\n  \U0001f4e6 [{_current_step}/{_TOTAL_STEPS}] {message}...")
+
+
+def step_done(detail: str = "") -> None:
+    """Mark the current step as complete."""
+
+    suffix = f"  {detail}" if detail else ""
+    print(f"  \u2705 done{suffix}")
 
 
 def die(message: str) -> NoReturn:
-    """Exit with a consistent installer error message."""
+    """Exit with a friendly installer error message."""
 
-    print(f"error: {message}", file=sys.stderr)
+    print(f"\n  \u274c  {message}\n", file=sys.stderr)
     raise SystemExit(1)
 
 
@@ -89,7 +108,7 @@ def require_command(name: str) -> None:
     """Ensure a command is available in PATH."""
 
     if shutil.which(name) is None:
-        die(f"Missing required command: {name}")
+        die(f"Required command not found: {name}\n\n      Install it and re-run the installer.")
 
 
 def build_context() -> InstallContext:
@@ -125,6 +144,7 @@ def run_command(
     as_user: bool = False,
     env: Mapping[str, str] | None = None,
     capture_output: bool = False,
+    quiet: bool = False,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     """Run a subprocess with optional privilege drop back to the user."""
@@ -151,6 +171,8 @@ def run_command(
         proc_env = os.environ.copy()
         if env:
             proc_env.update(env)
+    if quiet and not capture_output:
+        capture_output = True
     return subprocess.run(
         args,
         check=check,
@@ -247,7 +269,6 @@ def sync_runtime(ctx: InstallContext) -> None:
 
     ctx.runtime_dir.mkdir(parents=True, exist_ok=True)
     _chown_home_path(ctx, ctx.runtime_dir)
-    log(f"Syncing source files to {ctx.runtime_dir}")
     run_command(
         ctx,
         [
@@ -268,13 +289,10 @@ def sync_runtime(ctx: InstallContext) -> None:
 def install_python_environment(ctx: InstallContext) -> None:
     """Create the runtime venv and install dependencies plus the editable package."""
 
-    log(f"Creating Python virtual environment in {ctx.venv_dir}")
-    run_command(ctx, ["python3", "-m", "venv", str(ctx.venv_dir)], as_user=True)
-
-    log("Installing Python dependencies")
-    run_command(ctx, [ctx.pip_bin, "install", "--upgrade", "pip"], as_user=True)
-    run_command(ctx, [ctx.pip_bin, "install", "-r", ctx.runtime_dir / "requirements.txt"], as_user=True)
-    run_command(ctx, [ctx.pip_bin, "install", "--no-deps", "-e", ctx.runtime_dir], as_user=True)
+    run_command(ctx, ["python3", "-m", "venv", str(ctx.venv_dir)], as_user=True, quiet=True)
+    run_command(ctx, [ctx.pip_bin, "install", "--upgrade", "pip"], as_user=True, quiet=True)
+    run_command(ctx, [ctx.pip_bin, "install", "-r", ctx.runtime_dir / "requirements.txt"], as_user=True, quiet=True)
+    run_command(ctx, [ctx.pip_bin, "install", "--no-deps", "-e", ctx.runtime_dir], as_user=True, quiet=True)
 
 
 def download_model(ctx: InstallContext) -> None:
@@ -286,7 +304,6 @@ def download_model(ctx: InstallContext) -> None:
     """
 
     model_dir = ctx.runtime_dir / DEFAULT_MODEL_NAME
-    log(f"Ensuring model {DEFAULT_MODEL_HF_REPO} is complete at {model_dir}")
 
     # Run the download outside run_command so the TTY is preserved for
     # tqdm progress bars. subprocess user=/group= drops privileges
@@ -333,7 +350,6 @@ def next_preload_engines(current_preload: str, engine_id: str) -> str | None:
 def configure_preload_engines(ctx: InstallContext) -> None:
     """Ensure KDictate appears in the user's IBus preload engine list."""
 
-    log("Registering KDictate in IBus preload-engines (if missing)")
     result = run_command(
         ctx,
         ["dconf", "read", "/desktop/ibus/general/preload-engines"],
@@ -342,16 +358,16 @@ def configure_preload_engines(ctx: InstallContext) -> None:
         check=False,
     )
     if result.returncode != 0:
-        log("  dconf read failed; skipping preload-engines update")
+        log("dconf read failed; skipping preload-engines update")
         return
     current_preload = result.stdout.strip()
     try:
         new_preload = next_preload_engines(current_preload, DBUS_INTERFACE)
     except ValueError as exc:
-        log(f"  skipping preload-engines update: {exc}")
+        log(f"skipping preload-engines update: {exc}")
         return
     if new_preload is None:
-        log("  already present; leaving preload-engines unchanged")
+        pass  # already present
         return
     run_command(
         ctx,
@@ -366,7 +382,7 @@ def configure_kwin_input_method(ctx: InstallContext) -> None:
     if shutil.which("kwriteconfig6") is None:
         return
 
-    log("Configuring KDE Wayland to use IBus Wayland as the virtual keyboard")
+    # configure_kwin_input_method runs silently under the parent step
     if KDE_VIRTUAL_KEYBOARD_DESKTOP.is_file():
         run_command(
             ctx,
@@ -404,43 +420,32 @@ def configure_kwin_input_method(ctx: InstallContext) -> None:
 def refresh_ibus_registry(ctx: InstallContext) -> None:
     """Refresh IBus cache and restart ibus-daemon with the user component path."""
 
-    log("Refreshing the IBus engine registry for the current session")
     ibus_env = {
         "IBUS_COMPONENT_PATH": (
             f"{ctx.home / '.local/share/ibus/component'}:/usr/share/ibus/component"
         )
     }
-    run_command(ctx, ["ibus", "write-cache"], as_user=True, env=ibus_env)
-    run_command(ctx, ["ibus-daemon", "-drx", "-r", "-t", "refresh"], as_user=True, env=ibus_env)
+    run_command(ctx, ["ibus", "write-cache"], as_user=True, env=ibus_env, quiet=True)
+    run_command(ctx, ["ibus-daemon", "-drx", "-r", "-t", "refresh"], as_user=True, env=ibus_env, quiet=True)
 
 
 def reload_systemd_user(ctx: InstallContext) -> None:
     """Reload, enable, and restart the KDictate user service."""
 
-    log("Reloading the user systemd manager")
-    run_command(ctx, ["systemctl", "--user", "daemon-reload"], as_user=True)
-    run_command(ctx, ["systemctl", "--user", "enable", SERVICE_NAME], as_user=True)
-    run_command(ctx, ["systemctl", "--user", "restart", SERVICE_NAME], as_user=True)
+    run_command(ctx, ["systemctl", "--user", "daemon-reload"], as_user=True, quiet=True)
+    run_command(ctx, ["systemctl", "--user", "enable", SERVICE_NAME], as_user=True, quiet=True)
+    run_command(ctx, ["systemctl", "--user", "restart", SERVICE_NAME], as_user=True, quiet=True)
 
 
 def print_summary(ctx: InstallContext) -> None:
     """Print the install result summary."""
 
     print()
-    print("Done.")
-    print(f"  Systemd user service: {SERVICE_NAME}")
-    print(f"  D-Bus activation name: {DBUS_INTERFACE}")
-    print(f"  IBus component metadata: {IBUS_COMPONENT_NAME}")
-    print(f"  IBus environment file: {ctx.home / '.config/environment.d' / IBUS_ENV_FILE_NAME}")
-    print(f"  Plasma env cleanup: {ctx.home / '.config/plasma-workspace/env' / PLASMA_ENV_SCRIPT_NAME}")
-    print(f"  IBus engine executable: {ctx.engine_exec}")
-    print(f"  KDE shortcut launcher: {ctx.home / '.local/share/applications' / TOGGLE_DESKTOP_NAME}")
+    print(f"\n  \U0001f389 KDictate {__version__} installed successfully!")
     print()
-    print("Select the KDictate engine from IBus after the frontend is installed.")
-    print("On KDE Wayland, the installer also selects IBus Wayland as the virtual keyboard when KDE tools are available.")
-    print("The installer refreshes the IBus cache and restarts ibus-daemon for the current session.")
-    print("After the first install on KDE Wayland, sign out and back in once so KWin picks up the new input-method configuration.")
-    print("The core daemon now stays on the transcription side of the boundary only.")
+    print("  \U0001f4ac Sign out and back in once so KWin picks up the")
+    print("     input-method configuration, then Ctrl+Space to toggle.")
+    print()
 
 
 def run_sync_only(ctx: InstallContext) -> int:
@@ -465,77 +470,69 @@ def run_sync_only(ctx: InstallContext) -> int:
 def run_full_install(ctx: InstallContext) -> int:
     """Perform the full root-assisted install flow."""
 
-    require_command("pacman")
-    require_command("python3")
-    require_command("systemctl")
-    # gdbus is invoked at runtime by the toggle .desktop shortcut, not by the
-    # installer. Check it here so a missing gdbus is surfaced at install time
-    # rather than silently failing on first Ctrl+Space toggle.
-    require_command("gdbus")
-    require_command("rsync")
+    print(f"\n  KDictate {__version__} installer\n")
 
-    log("Installing required system package: ibus")
-    run_command(ctx, ["pacman", "-S", "--noconfirm", "--needed", "ibus"])
+    for cmd in ("pacman", "python3", "systemctl", "gdbus", "rsync"):
+        require_command(cmd)
 
-    # Check after pacman — dconf may arrive as an ibus dependency on fresh systems.
+    step("Installing system dependencies")
+    run_command(ctx, ["pacman", "-S", "--noconfirm", "--needed", "ibus"], quiet=True)
     require_command("dconf")
-
     require_command("ibus")
     require_command("ibus-daemon")
+    step_done("ibus")
 
+    step("Syncing runtime files")
     sync_runtime(ctx)
+    step_done()
+
+    step("Setting up Python environment")
     install_python_environment(ctx)
+    step_done()
+
+    step("Downloading Whisper model")
     download_model(ctx)
+    step_done(DEFAULT_MODEL_HF_REPO)
 
-    log("Installing systemd user service")
-    install_rendered_file(
-        ctx,
-        ctx.script_dir / "packaging" / "kdictate-systemd.service",
-        ctx.home / ".config/systemd/user" / SERVICE_NAME,
-    )
+    step("Installing systemd user service")
+    install_rendered_file(ctx, ctx.script_dir / "packaging" / "kdictate-systemd.service",
+                          ctx.home / ".config/systemd/user" / SERVICE_NAME)
+    step_done()
 
-    log("Installing D-Bus activation service")
-    install_rendered_file(
-        ctx,
-        ctx.script_dir / "packaging" / f"{APP_ROOT_ID}.service",
-        ctx.home / ".local/share/dbus-1/services" / DBUS_SERVICE_NAME,
-    )
+    step("Installing D-Bus activation service")
+    install_rendered_file(ctx, ctx.script_dir / "packaging" / f"{APP_ROOT_ID}.service",
+                          ctx.home / ".local/share/dbus-1/services" / DBUS_SERVICE_NAME)
+    step_done()
 
-    log("Installing IBus component metadata")
-    install_rendered_file(
-        ctx,
-        ctx.script_dir / "packaging" / IBUS_COMPONENT_NAME,
-        ctx.home / ".local/share/ibus/component" / IBUS_COMPONENT_NAME,
-    )
+    step("Installing IBus engine metadata")
+    install_rendered_file(ctx, ctx.script_dir / "packaging" / IBUS_COMPONENT_NAME,
+                          ctx.home / ".local/share/ibus/component" / IBUS_COMPONENT_NAME)
+    install_rendered_file(ctx, ctx.script_dir / "packaging" / IBUS_ENV_FILE_NAME,
+                          ctx.home / ".config/environment.d" / IBUS_ENV_FILE_NAME)
+    step_done()
 
-    log("Installing IBus component-path environment")
-    install_rendered_file(
-        ctx,
-        ctx.script_dir / "packaging" / IBUS_ENV_FILE_NAME,
-        ctx.home / ".config/environment.d" / IBUS_ENV_FILE_NAME,
-    )
-
-    log("Installing Plasma Wayland environment cleanup")
-    copy_owned_file(
-        ctx,
-        ctx.script_dir / "packaging" / PLASMA_ENV_SCRIPT_NAME,
-        ctx.home / ".config/plasma-workspace/env" / PLASMA_ENV_SCRIPT_NAME,
-    )
-
-    log("Installing KDE shortcut launcher")
-    install_rendered_file(
-        ctx,
-        ctx.script_dir / "packaging" / TOGGLE_DESKTOP_NAME,
-        ctx.home / ".local/share/applications" / TOGGLE_DESKTOP_NAME,
-    )
-
+    step("Installing KDE/Plasma integration")
+    copy_owned_file(ctx, ctx.script_dir / "packaging" / PLASMA_ENV_SCRIPT_NAME,
+                    ctx.home / ".config/plasma-workspace/env" / PLASMA_ENV_SCRIPT_NAME)
+    install_rendered_file(ctx, ctx.script_dir / "packaging" / TOGGLE_DESKTOP_NAME,
+                          ctx.home / ".local/share/applications" / TOGGLE_DESKTOP_NAME)
     if shutil.which("kbuildsycoca6") is not None:
-        run_command(ctx, ["kbuildsycoca6", "--noincremental"], as_user=True, check=False)
+        run_command(ctx, ["kbuildsycoca6", "--noincremental"], as_user=True, quiet=True, check=False)
+    step_done()
 
+    step("Registering IBus input method")
     configure_preload_engines(ctx)
     configure_kwin_input_method(ctx)
+    step_done()
+
+    step("Refreshing IBus engine registry")
     refresh_ibus_registry(ctx)
+    step_done()
+
+    step("Starting KDictate service")
     reload_systemd_user(ctx)
+    step_done()
+
     print_summary(ctx)
     return 0
 
