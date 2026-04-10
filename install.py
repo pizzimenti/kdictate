@@ -72,7 +72,7 @@ class InstallContext:
         }
 
 
-_TOTAL_STEPS = 13
+_TOTAL_STEPS = 11
 _current_step = 0
 
 
@@ -328,7 +328,6 @@ def download_model(ctx: InstallContext) -> None:
         group=ctx.install_gid if os.geteuid() == 0 else None,
     )
     _chown_home_path(ctx, model_dir)
-    log("Model download complete")
 
 
 def next_preload_engines(current_preload: str, engine_id: str) -> str | None:
@@ -426,7 +425,15 @@ def refresh_ibus_registry(ctx: InstallContext) -> None:
         )
     }
     run_command(ctx, ["ibus", "write-cache"], as_user=True, env=ibus_env, quiet=True)
-    run_command(ctx, ["ibus-daemon", "-drx", "-r", "-t", "refresh"], as_user=True, env=ibus_env, quiet=True)
+    # ibus-daemon -drx forks; the child's output bypasses subprocess capture,
+    # so redirect fds at the shell level to keep the installer output clean.
+    run_command(
+        ctx,
+        ["bash", "-c", "ibus-daemon -drx -r -t refresh >/dev/null 2>&1"],
+        as_user=True,
+        env=ibus_env,
+        quiet=True,
+    )
 
 
 def reload_systemd_user(ctx: InstallContext) -> None:
