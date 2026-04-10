@@ -10,7 +10,6 @@ FORBIDDEN_TOKENS = ("ydotool", "dotool", "wtype", "wl-copy", "xdotool", "type_te
 ACTIVE_PATHS = (
     Path("README.md"),
     Path("install.py"),
-    Path("install.py"),
     Path("kdictate"),
     Path("packaging"),
 )

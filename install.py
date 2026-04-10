@@ -153,7 +153,8 @@ def run_command(
     return subprocess.run(
         args,
         check=check,
-        text=True,
+        encoding="utf-8",
+        errors="replace",
         capture_output=capture_output,
         env=proc_env,
     )
@@ -193,7 +194,10 @@ def _safe_destination(destination: Path) -> Path:
 def write_owned_text(ctx: InstallContext, destination: Path, text: str, *, mode: int = 0o644) -> None:
     """Write a text file under the target user's ownership."""
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    resolved_parent = destination.parent.resolve()
+    if not resolved_parent.is_relative_to(ctx.home.resolve()):
+        die(f"Refusing to write outside home tree: {destination} resolves to {resolved_parent}")
+    resolved_parent.mkdir(parents=True, exist_ok=True)
     _chown_home_path(ctx, destination.parent)
     _safe_destination(destination)
     destination.write_text(text, encoding="utf-8")
@@ -204,7 +208,10 @@ def write_owned_text(ctx: InstallContext, destination: Path, text: str, *, mode:
 def copy_owned_file(ctx: InstallContext, source: Path, destination: Path, *, mode: int = 0o644) -> None:
     """Copy a file into place under the target user's ownership."""
 
-    destination.parent.mkdir(parents=True, exist_ok=True)
+    resolved_parent = destination.parent.resolve()
+    if not resolved_parent.is_relative_to(ctx.home.resolve()):
+        die(f"Refusing to write outside home tree: {destination} resolves to {resolved_parent}")
+    resolved_parent.mkdir(parents=True, exist_ok=True)
     _chown_home_path(ctx, destination.parent)
     _safe_destination(destination)
     shutil.copyfile(source, destination)
@@ -428,10 +435,12 @@ def run_full_install(ctx: InstallContext) -> int:
     # rather than silently failing on first Ctrl+Space toggle.
     require_command("gdbus")
     require_command("rsync")
-    require_command("dconf")
 
     log("Installing required system package: ibus")
     run_command(ctx, ["pacman", "-S", "--noconfirm", "--needed", "ibus"])
+
+    # Check after pacman — dconf may arrive as an ibus dependency on fresh systems.
+    require_command("dconf")
 
     require_command("ibus")
     require_command("ibus-daemon")

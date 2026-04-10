@@ -45,9 +45,13 @@ def resolve_default_input_device() -> tuple[str, bool]:
                 source_name, name, description,
             )
             try:
-                _run_pactl("set-default-source", name)
+                result = _run_pactl("set-default-source", name)
+                if result.returncode != 0:
+                    _LOGGER.warning("pactl set-default-source %s exited %d", name, result.returncode)
+                    return (source_name, False)
             except Exception:  # noqa: BLE001
                 _LOGGER.warning("Failed to set default source to %s", name)
+                return (source_name, False)
             return (description, True)
         return (source_name, False)
 
