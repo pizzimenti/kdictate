@@ -16,7 +16,7 @@ ENGINE_DESCRIPTION: Final[str] = "Session D-Bus driven dictation engine"
 ENGINE_LANGUAGE: Final[str] = "en"
 ENGINE_ICON: Final[str] = "audio-input-microphone"
 ENGINE_LAYOUT: Final[str] = "default"
-ENGINE_RANK: Final[str] = "1"
+ENGINE_RANK: Final[str] = "1"  # str because it's serialised into the XML template
 
 DEFAULT_MODEL_NAME: Final[str] = "whisper-large-v3-turbo-ct2"
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parent.parent

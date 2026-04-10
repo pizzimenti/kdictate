@@ -49,17 +49,17 @@ class DaemonEventSink(Protocol):
 class _NullEventSink:
     """No-op sink used when the daemon runs without an attached transport."""
 
-    def state_changed(self, state: str) -> None:
-        del state
+    def state_changed(self, _state: str) -> None:
+        pass
 
-    def partial_transcript(self, text: str) -> None:
-        del text
+    def partial_transcript(self, _text: str) -> None:
+        pass
 
-    def final_transcript(self, text: str) -> None:
-        del text
+    def final_transcript(self, _text: str) -> None:
+        pass
 
-    def error_occurred(self, code: str, message: str) -> None:
-        del code, message
+    def error_occurred(self, _code: str, _message: str) -> None:
+        pass
 
 
 @dataclass(slots=True)

@@ -58,13 +58,12 @@ def recommended_shortform_cpu_threads() -> int:
     return max(1, logical // 2)
 
 
-def resolve_runtime(device: str | None, compute_type: str | None, cpu_threads: int | None) -> dict:
+def resolve_runtime(_device: str | None, compute_type: str | None, cpu_threads: int | None) -> dict:
     """Resolve effective runtime options under a CPU-only policy.
 
     Any `device` value currently resolves to CPU. We keep the argument for
     CLI compatibility and future extension without breaking call sites.
     """
-    del device
     resolved_device = "cpu"
 
     if compute_type:
