@@ -278,14 +278,15 @@ def install_python_environment(ctx: InstallContext) -> None:
 
 
 def download_model(ctx: InstallContext) -> None:
-    """Download the Whisper model if it's not already present."""
+    """Download or verify the Whisper model.
+
+    Always calls snapshot_download, which checks file hashes internally
+    and only re-downloads incomplete or missing files. This handles both
+    fresh installs and interrupted downloads correctly.
+    """
 
     model_dir = ctx.runtime_dir / DEFAULT_MODEL_NAME
-    if model_dir.exists():
-        log(f"Model already present at {model_dir}")
-        return
-
-    log(f"Downloading model {DEFAULT_MODEL_HF_REPO} to {model_dir}")
+    log(f"Ensuring model {DEFAULT_MODEL_HF_REPO} is complete at {model_dir}")
     run_command(
         ctx,
         [
