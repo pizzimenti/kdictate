@@ -425,17 +425,13 @@ def refresh_ibus_registry(ctx: InstallContext) -> None:
         )
     }
     run_command(ctx, ["ibus", "write-cache"], as_user=True, env=ibus_env, quiet=True)
-    # Use `ibus restart` to replace the running daemon in-place rather than
-    # spawning a second one with `ibus-daemon -drx`. The session's ibus-daemon
-    # (launched at login) is the one clients talk to; a new fork just creates
-    # a duplicate that the clients ignore.
-    run_command(
-        ctx,
-        ["bash", "-c", "ibus restart >/dev/null 2>&1"],
-        as_user=True,
-        env=ibus_env,
-        check=False,
-    )
+    # Kill the existing daemon and start a fresh one with our component path.
+    # `ibus restart` under sudo sometimes kills the old daemon but fails to
+    # start the replacement. Explicit kill + start is more reliable.
+    run_command(ctx, ["bash", "-c", "pkill -f ibus-daemon 2>/dev/null; true"],
+                as_user=True, check=False)
+    run_command(ctx, ["bash", "-c", "ibus-daemon -drx >/dev/null 2>&1"],
+                as_user=True, env=ibus_env, check=False)
 
 
 def reload_systemd_user(ctx: InstallContext) -> None:
