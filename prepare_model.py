@@ -12,6 +12,8 @@ import shutil
 import sys
 from pathlib import Path
 
+from kdictate.app_metadata import DEFAULT_MODEL_DIR, DEFAULT_MODEL_ID
+
 REQUIRED_METADATA_FILES = ("tokenizer.json", "preprocessor_config.json")
 
 
@@ -19,12 +21,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Convert a Whisper-compatible model to local CTranslate2 format.")
     parser.add_argument(
         "--model-id",
-        default="distil-whisper/distil-medium.en",
+        default=DEFAULT_MODEL_ID,
         help="Hugging Face model ID to convert.",
     )
     parser.add_argument(
         "--output-dir",
-        default="models/distil-medium-en-ct2-int8",
+        default=str(DEFAULT_MODEL_DIR),
         help="Destination directory for converted model.",
     )
     parser.add_argument(

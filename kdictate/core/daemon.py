@@ -479,7 +479,6 @@ class DictationDaemon:
                 self._logger.info("start deferred until transcription completes")
                 return
             self._starting = True
-            self._transcribing = False
             self._cancel_start.clear()
             self._reset_session_buffers()
             self._handles = _ThreadHandles()

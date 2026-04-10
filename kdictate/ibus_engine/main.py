@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import Sequence
+from typing import Any, Sequence
 
 import gi
 
@@ -16,6 +16,15 @@ from kdictate.logging_utils import configure_logging
 from kdictate.ibus_engine.engine import ENGINE_NAME, initialize_engine_runtime, load_ibus_module
 
 
+def _startup_engine_runtime(executable_path: str) -> tuple[Any, Any, Any]:
+    """Load IBus and initialize the engine runtime objects."""
+
+    ibus = load_ibus_module()
+    ibus.init()
+    bus, factory = initialize_engine_runtime(executable_path, ibus_module=ibus)
+    return ibus, bus, factory
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the IBus engine main loop."""
 
@@ -24,9 +33,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     executable_path = argv[0] if argv else sys.argv[0]
     try:
-        ibus = load_ibus_module()
-        ibus.init()
-        bus, factory = initialize_engine_runtime(executable_path, ibus_module=ibus)
+        ibus, bus, factory = _startup_engine_runtime(executable_path)
     except IbusEngineError as exc:
         logger.error("IBus engine startup failed: %s", exc)
         print(str(exc), file=sys.stderr)

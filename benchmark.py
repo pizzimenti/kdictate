@@ -4,42 +4,21 @@ from __future__ import annotations
 
 import argparse
 import statistics
-import time
 from pathlib import Path
 
-from kdictate.audio_common import load_whisper_model
-from kdictate.runtime_profile import recommended_shortform_cpu_threads, resolve_runtime, set_thread_env
+from kdictate.offline_common import (
+    add_shared_runtime_args,
+    load_offline_model,
+    resolve_input_paths,
+)
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Benchmark Whisper transcription speed.")
     parser.add_argument("audio", help="Path to input audio file.")
-    parser.add_argument(
-        "--model-dir",
-        default="models/distil-medium-en-ct2-int8",
-        help="Path to converted CTranslate2 model directory.",
-    )
-    parser.add_argument(
-        "--device",
-        default="cpu",
-        choices=("auto", "cpu"),
-        help="Inference device (CPU only in this project).",
-    )
-    parser.add_argument(
-        "--compute-type",
-        default=None,
-        choices=("float32", "float16", "int8", "int8_float16"),
-        help="faster-whisper compute type. If omitted, auto-selects.",
-    )
-    parser.add_argument(
-        "--cpu-threads",
-        type=int,
-        default=recommended_shortform_cpu_threads(),
-        help="Override CPU thread count. Defaults to a short-form latency-oriented value.",
-    )
+    add_shared_runtime_args(parser)
     parser.add_argument("--runs", type=int, default=3, help="Measured runs.")
     parser.add_argument("--warmup", type=int, default=1, help="Warmup runs.")
-    parser.add_argument("--language", default="en", help="Language code (for example: en).")
     parser.add_argument("--beam-size", type=int, default=1, help="Beam size.")
     parser.add_argument(
         "--vad-filter",
@@ -74,28 +53,19 @@ def run_once(model, audio_path: Path, language: str | None, beam_size: int, vad_
 
 def main() -> int:
     args = parse_args()
-    audio_path = Path(args.audio)
-    if not audio_path.exists():
-        print(f"Audio file not found: {audio_path}")
-        return 1
-
-    model_dir = Path(args.model_dir)
-    if not model_dir.exists():
-        print(f"Model directory not found: {model_dir}")
+    try:
+        audio_path, model_dir = resolve_input_paths(args.audio, args.model_dir)
+    except FileNotFoundError as exc:
+        print(str(exc))
         print("Prepare the default model first: python prepare_model.py")
         return 1
 
-    runtime = resolve_runtime(args.device, args.compute_type, args.cpu_threads)
-    set_thread_env(runtime["cpu_threads"])
-
-    load_start = time.perf_counter()
-    model = load_whisper_model(
+    model, runtime, load_seconds = load_offline_model(
         model_dir,
-        device=runtime["device"],
-        compute_type=runtime["compute_type"],
-        cpu_threads=runtime["cpu_threads"],
+        device=args.device,
+        compute_type=args.compute_type,
+        cpu_threads=args.cpu_threads,
     )
-    load_seconds = time.perf_counter() - load_start
 
     # Warmup runs stabilize caches and one-time kernel setup costs.
     for _ in range(max(0, args.warmup)):

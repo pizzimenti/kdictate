@@ -9,6 +9,7 @@ import unittest
 FORBIDDEN_TOKENS = ("ydotool", "dotool", "wtype", "wl-copy", "xdotool")
 ALLOWED_SUFFIXES = {".py", ".sh", ".xml", ".service", ".desktop", ".md"}
 ACTIVE_PATHS = (
+    Path("install.py"),
     Path("install.sh"),
     Path("systemd"),
     Path("kdictate"),
