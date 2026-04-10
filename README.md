@@ -7,6 +7,8 @@ solves text placement correctly on **KDE Plasma Wayland** by going through IBus 
 the KWin input-method protocol, rather than relying on synthetic-keystroke injectors
 or clipboard hacks. The `K`-prefix advertises the target environment.
 
+The system is split into two cooperating processes that talk over session D-Bus:
+
 1. **Core dictation daemon** (`python -m kdictate.core`): persistent mic
    capture/transcribe worker that publishes transcript/state events on the
    session D-Bus.
