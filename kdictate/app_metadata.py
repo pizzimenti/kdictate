@@ -18,7 +18,6 @@ ENGINE_ICON: Final[str] = "audio-input-microphone"
 ENGINE_LAYOUT: Final[str] = "default"
 ENGINE_RANK: Final[str] = "1"
 
-DEFAULT_MODEL_ID: Final[str] = "openai/whisper-large-v3-turbo"
 DEFAULT_MODEL_NAME: Final[str] = "whisper-large-v3-turbo-ct2"
 PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
-DEFAULT_MODEL_DIR: Final[Path] = PROJECT_ROOT / "models" / DEFAULT_MODEL_NAME
+DEFAULT_MODEL_DIR: Final[Path] = PROJECT_ROOT / DEFAULT_MODEL_NAME

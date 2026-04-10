@@ -34,16 +34,6 @@ pip install -r requirements.txt
 pip install -r requirements-dev.txt
 ```
 
-Convert the model once:
-
-```bash
-python prepare_model.py --model-id openai/whisper-large-v3-turbo --output-dir models/whisper-large-v3-turbo-ct2
-```
-
-Historical evaluation artifacts for other models are retained under `eval/results/`.
-
-If `torch` is unavailable for your Python version, use a Python 3.12 venv for conversion only.
-
 ### System dictation daemon
 
 On Arch/Manjaro, `install.py` handles the bootstrap path automatically:
@@ -149,7 +139,6 @@ behavior stays consistent across shells and user services.
 
 ## Tuning
 
-- `--model-dir`: default is `whisper-large-v3-turbo-ct2`. For maximum accuracy use `whisper-large-v3-ct2` (1.3% vs 1.6% WER, ~1.4s slower startup).
 - `--profile interactive|service`: named daemon presets. The installed user service uses `service`; ad-hoc CLI runs default to `interactive`.
 - `--cpu-threads N`: override thread count. Dictation-oriented defaults now use physical cores / short-form-friendly thread counts.
 - `--compute-type int8|float16|float32`: precision/runtime tradeoff.
@@ -171,7 +160,6 @@ behavior stays consistent across shells and user services.
 - `install.sh`: thin compatibility wrapper that forwards to `install.py`.
 - `pyproject.toml`: package metadata and console-script entry points.
 - `requirements-dev.txt`: local development and test-only dependencies.
-- `prepare_model.py`: download and convert the model.
 - `kdictate/`: core package — D-Bus contract, daemon logic, IBus frontend, CLI, runtime utilities, audio helpers (`kdictate.audio_common`), and CPU thread / compute-type selection (`kdictate.runtime_profile`).
 - `systemd/io.github.pizzimenti.KDictate.service`: systemd user unit for the core daemon (`ExecStart=... kdictate-daemon --profile service`).
 - `packaging/io.github.pizzimenti.KDictate.service`: D-Bus session activation file (delegates to the systemd unit via `SystemdService=`).
@@ -181,89 +169,8 @@ behavior stays consistent across shells and user services.
 - `packaging/60-kdictate-ibus.conf`: `environment.d` snippet that adds the per-user IBus component directory to `IBUS_COMPONENT_PATH` and sets `XMODIFIERS=@im=ibus`.
 - `packaging/kdictate-plasma-wayland.sh`: Plasma session env script that unsets `GTK_IM_MODULE` and `QT_IM_MODULE` to let the compositor-backed IBus Wayland path handle native clients.
 - `scripts/check_ibus_only.py`: regression check for forbidden injector and clipboard backends.
-- `transcribe.py`: transcribe an audio file.
-- `benchmark.py`: latency and RTF benchmarking.
-- `eval/sweep.py`: run the primary verbose eval sweep with per-sample transcript diffs and saved reports.
-
-## Evaluation
-
-Run the primary verbose sweep with:
-
-```bash
-.venv/bin/python eval/sweep.py --samples 20 --tag myrun
-```
-
-List available sweep presets with:
-
-```bash
-.venv/bin/python eval/sweep.py --list-presets
-```
-
-Run the current large-model bakeoff with:
-
-```bash
-.venv/bin/python eval/sweep.py --preset accuracy-bakeoff --samples 20 --tag accuracy_bakeoff
-```
-
-That preset compares:
-
-- `whisper-large-v3`
-- `whisper-large-v3-turbo`
-- `distil-large-v3.5`
-
-using the repo's current short-form dictation-oriented decode defaults.
-
-If those models are not converted locally yet, prepare them with:
-
-```bash
-python prepare_model.py --model-id openai/whisper-large-v3 --output-dir models/whisper-large-v3-ct2
-python prepare_model.py --model-id openai/whisper-large-v3-turbo --output-dir models/whisper-large-v3-turbo-ct2
-python prepare_model.py --model-id distil-whisper/distil-large-v3.5 --output-dir models/distil-large-v3.5-ct2
-```
-
-If you specifically just need `distil-large-v3.5`, the command is:
-
-```bash
-python prepare_model.py --model-id distil-whisper/distil-large-v3.5 --output-dir models/distil-large-v3.5-ct2
-```
-
-For a single-model deep dive with the same verbose output style:
-
-```bash
-.venv/bin/python eval/evaluate.py --model-dir whisper-large-v3-turbo-ct2 --samples 20 --tag turbo_single
-```
-
-The sweep now prints, for every sample:
-
-- runtime/decode settings
-- model load time
-- per-sample audio time, decode time, RTF, speed-x, and WER
-- reference and hypothesis blocks
-- token-by-token side-by-side alignment with matches/substitutions/insertions/deletions
-- per-segment timing and text emission
-
-`eval/verbose_benchmark.py` still exists as a compatibility wrapper if you want the old entrypoint name:
-
-```bash
-.venv/bin/python eval/verbose_benchmark.py --preset accuracy-bakeoff --samples 20 --tag watch_live
-```
-
-Each sweep writes `summary.json`, `leaderboard.csv`, `leaderboard.md`, one JSON per config, and one Markdown report per config under `eval/results/sweeps/<timestamp>_<tag>/`. Those per-config reports include the model settings plus the full reference/hypothesis comparison for every audio file.
-
-March 2026 bakeoff results on the bundled 20-sample LibriSpeech set (beam=1, int8, no VAD, condition_on_previous=False):
-
-| Model | Threads | Avg WER | RTF | Mean decode | Model load |
-|---|---|---|---|---|---|
-| whisper-large-v3 | 6 | **1.301%** | 0.716 | 5.888s | 6.218s |
-| whisper-large-v3-turbo | 12 | 1.614% | **0.545** | **4.485s** | 2.189s |
-| distil-large-v3.5 | 6 | 2.747% | 0.667 | 5.480s | 0.946s |
-
-- `whisper-large-v3-turbo` is the default: best overall speed on this 12-core machine, WER within 0.3pp of large-v3.
-- `whisper-large-v3` is the accuracy-first option: 1.3% WER, use `--model-dir models/whisper-large-v3-ct2`.
-- `distil-large-v3.5` was rejected: 2.1x worse WER than large-v3, no speed advantage over turbo, and consistent proper-noun truncation errors.
 
 ## Notes
 
-- First conversion can take time and several GB of storage.
 - CPU-only; no CUDA or ROCm required.
-- Live mode does not create transcript files unless you redirect terminal output.
+- The model (`whisper-large-v3-turbo`, CTranslate2 int8) is stored at `~/.local/share/kdictate/whisper-large-v3-turbo-ct2/`.

@@ -257,25 +257,6 @@ def sync_runtime(ctx: InstallContext) -> None:
     copy_owned_file(ctx, ctx.script_dir / "pyproject.toml", ctx.runtime_dir / "pyproject.toml")
 
 
-def migrate_models(ctx: InstallContext) -> None:
-    """Move or relink the model directory out of the source tree once."""
-
-    source_models = ctx.script_dir / "models"
-    runtime_models = ctx.runtime_dir / "models"
-    if not source_models.exists() or runtime_models.exists():
-        return
-
-    if source_models.is_symlink():
-        models_target = source_models.resolve()
-        log(f"models/ is a symlink -> {models_target}; recreating link at {runtime_models}")
-        run_command(ctx, ["ln", "-s", str(models_target), str(runtime_models)], as_user=True)
-        source_models.unlink()
-        return
-
-    log(f"Migrating models/ from source tree to {runtime_models} (one-time)")
-    run_command(ctx, ["mv", str(source_models), str(runtime_models)], as_user=True)
-
-
 def install_python_environment(ctx: InstallContext) -> None:
     """Create the runtime venv and install dependencies plus the editable package."""
 
@@ -456,7 +437,7 @@ def run_full_install(ctx: InstallContext) -> int:
     require_command("ibus-daemon")
 
     sync_runtime(ctx)
-    migrate_models(ctx)
+    # Model is expected at $RUNTIME_DIR/whisper-large-v3-turbo-ct2/.
     install_python_environment(ctx)
 
     log("Installing systemd user service")
