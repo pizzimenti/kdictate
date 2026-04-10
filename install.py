@@ -287,10 +287,16 @@ def download_model(ctx: InstallContext) -> None:
 
     model_dir = ctx.runtime_dir / DEFAULT_MODEL_NAME
     log(f"Ensuring model {DEFAULT_MODEL_HF_REPO} is complete at {model_dir}")
-    run_command(
-        ctx,
+
+    # Run the download outside run_command so the TTY is preserved for
+    # tqdm progress bars. subprocess user=/group= drops privileges
+    # cleanly without the sudo wrapper that kills the PTY.
+    dl_env = os.environ.copy()
+    dl_env["HOME"] = str(ctx.home)
+    dl_env["XDG_RUNTIME_DIR"] = str(ctx.user_runtime_dir)
+    subprocess.run(
         [
-            ctx.python_bin,
+            str(ctx.python_bin),
             "-u",
             "-c",
             (
@@ -299,8 +305,10 @@ def download_model(ctx: InstallContext) -> None:
                 f"local_dir={str(model_dir)!r})"
             ),
         ],
-        env={"TERM": os.environ.get("TERM", "xterm")},
-        as_user=True,
+        check=True,
+        env=dl_env,
+        user=ctx.install_uid if os.geteuid() == 0 else None,
+        group=ctx.install_gid if os.geteuid() == 0 else None,
     )
     _chown_home_path(ctx, model_dir)
     log("Model download complete")
