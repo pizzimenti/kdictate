@@ -181,7 +181,18 @@ def build_engine_factory(bus: Any | None = None, ibus_module: ModuleType | None 
 
 
 def claim_component_name(bus: Any, ibus_module: ModuleType | None = None) -> int:
-    """Claim the installed component name for the ibus-daemon launched engine."""
+    """Signal the IBus daemon that this engine's factory is ready.
+
+    The daemon waits for a NameOwnerChanged event triggered by
+    request_name() to associate the component with a live factory.
+    Without this call, SetGlobalEngine times out because the daemon
+    never learns the factory exists.
+
+    IN_QUEUE is an expected result: the daemon itself holds the
+    component name after reading the XML, so our request queues behind
+    it — but the NameOwnerChanged signal still fires, which is all the
+    daemon needs.
+    """
 
     ibus = ibus_module or load_ibus_module()
     request_name = getattr(bus, "request_name", None)
@@ -192,6 +203,7 @@ def claim_component_name(bus: Any, ibus_module: ModuleType | None = None) -> int
     if result not in {
         ibus.BusRequestNameReply.PRIMARY_OWNER,
         ibus.BusRequestNameReply.ALREADY_OWNER,
+        ibus.BusRequestNameReply.IN_QUEUE,
     }:
         raise IbusEngineError(f"Unable to claim IBus component name {COMPONENT_NAME!r}")
     return int(result)
@@ -208,6 +220,7 @@ def initialize_engine_runtime(
         raise IbusEngineError("Unable to connect to the IBus bus")
 
     factory = build_engine_factory(bus=bus, ibus_module=ibus)
+    claim_component_name(bus, ibus_module=ibus)
     return bus, factory
 
 
