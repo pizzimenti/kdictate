@@ -101,6 +101,8 @@ def build_context() -> InstallContext:
         user_entry = pwd.getpwuid(install_uid)
         home = Path(user_entry.pw_dir)
         install_gid = user_entry.pw_gid
+    elif os.geteuid() == 0:
+        die("Do not run the installer as root directly; use pkexec or let install.sh handle elevation")
     else:
         install_uid = os.getuid()
         install_gid = os.getgid()
@@ -173,11 +175,27 @@ def _chown_home_path(ctx: InstallContext, path: Path) -> None:
         current = current.parent
 
 
+def _safe_destination(destination: Path) -> Path:
+    """Remove a symlink at *destination* so subsequent writes are not redirected.
+
+    Under pkexec the installer runs as root against a user-controlled home
+    directory. A user-planted symlink at the destination would cause root to
+    overwrite the symlink target — a local privilege-escalation vector. This
+    helper removes the symlink (but not regular files, which are ours from a
+    previous install) so the caller can safely create the real file.
+    """
+
+    if destination.is_symlink():
+        destination.unlink()
+    return destination
+
+
 def write_owned_text(ctx: InstallContext, destination: Path, text: str, *, mode: int = 0o644) -> None:
     """Write a text file under the target user's ownership."""
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     _chown_home_path(ctx, destination.parent)
+    _safe_destination(destination)
     destination.write_text(text, encoding="utf-8")
     destination.chmod(mode)
     _chown_home_path(ctx, destination)
@@ -188,6 +206,7 @@ def copy_owned_file(ctx: InstallContext, source: Path, destination: Path, *, mod
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     _chown_home_path(ctx, destination.parent)
+    _safe_destination(destination)
     shutil.copyfile(source, destination)
     destination.chmod(mode)
     _chown_home_path(ctx, destination)
@@ -300,7 +319,11 @@ def configure_preload_engines(ctx: InstallContext) -> None:
         log("  dconf read failed; skipping preload-engines update")
         return
     current_preload = result.stdout.strip()
-    new_preload = next_preload_engines(current_preload, DBUS_INTERFACE)
+    try:
+        new_preload = next_preload_engines(current_preload, DBUS_INTERFACE)
+    except ValueError as exc:
+        log(f"  skipping preload-engines update: {exc}")
+        return
     if new_preload is None:
         log("  already present; leaving preload-engines unchanged")
         return
