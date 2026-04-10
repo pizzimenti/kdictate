@@ -416,6 +416,28 @@ def configure_kwin_input_method(ctx: InstallContext) -> None:
     )
 
 
+def register_global_shortcut(ctx: InstallContext) -> None:
+    """Write the Ctrl+Space shortcut into kglobalshortcutsrc.
+
+    KDE's X-KDE-Shortcuts auto-registration only happens at login.
+    During a running session we have to write the entry directly.
+    """
+
+    shortcut_file = ctx.home / ".config" / "kglobalshortcutsrc"
+    section = f"[services][{TOGGLE_DESKTOP_NAME}]"
+    entry = "_launch=Ctrl+Space, Ctrl+Space"
+
+    if shortcut_file.exists():
+        content = shortcut_file.read_text(encoding="utf-8")
+        if section in content:
+            return  # already registered
+    else:
+        content = ""
+
+    content = content.rstrip("\n") + f"\n\n{section}\n{entry}\n"
+    shortcut_file.write_text(content, encoding="utf-8")
+
+
 def refresh_ibus_registry(ctx: InstallContext) -> None:
     """Refresh IBus cache and restart ibus-daemon with the user component path."""
 
@@ -532,6 +554,7 @@ def run_full_install(ctx: InstallContext) -> int:
                           ctx.home / ".local/share/applications" / TOGGLE_DESKTOP_NAME)
     if shutil.which("kbuildsycoca6") is not None:
         run_command(ctx, ["kbuildsycoca6", "--noincremental"], as_user=True, quiet=True, check=False)
+    register_global_shortcut(ctx)
     step_done()
 
     step("Registering IBus input method")
@@ -548,13 +571,20 @@ def run_full_install(ctx: InstallContext) -> int:
     step_done()
 
     step("Activating KDictate input method")
-    run_command(
-        ctx,
-        ["ibus", "engine", DBUS_INTERFACE],
-        as_user=True,
-        quiet=True,
-        check=False,
-    )
+    # The KWin toggle relaunches ibus-daemon asynchronously. Retry a few
+    # times so the engine activation doesn't race the daemon startup.
+    import time as _time
+    for attempt in range(5):
+        result = run_command(
+            ctx,
+            ["ibus", "engine", DBUS_INTERFACE],
+            as_user=True,
+            quiet=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            break
+        _time.sleep(1)
     step_done()
 
     print_summary(ctx)
