@@ -72,7 +72,12 @@ install_copied_file() {
 sync_runtime() {
     run_as_user mkdir -p "$RUNTIME_DIR"
     log "Syncing source files to $RUNTIME_DIR"
-    run_as_user rsync -a --delete --exclude='__pycache__' \
+    # --delete-excluded is required alongside --exclude='__pycache__':
+    # rsync's --delete skips paths matched by --exclude when deciding
+    # what to remove from the destination, so stale pycache dirs already
+    # present in $RUNTIME_DIR/kdictate/ would persist forever without
+    # this flag.
+    run_as_user rsync -a --delete --delete-excluded --exclude='__pycache__' \
         "$SCRIPT_DIR/kdictate/" "$RUNTIME_DIR/kdictate/"
     run_as_user install -Dm644 "$SCRIPT_DIR/requirements.txt" "$RUNTIME_DIR/requirements.txt"
     run_as_user install -Dm644 "$SCRIPT_DIR/pyproject.toml"   "$RUNTIME_DIR/pyproject.toml"
@@ -203,6 +208,27 @@ install_rendered_file \
     "$HOME/.local/share/applications/$TOGGLE_DESKTOP_NAME"
 if command -v kbuildsycoca6 >/dev/null 2>&1; then
     run_as_user kbuildsycoca6 --noincremental >/dev/null 2>&1 || true
+fi
+
+# Register the KDictate engine with IBus so it shows up in the engine
+# switcher without needing `ibus-setup`. We only ADD to the existing
+# preload-engines list — never clobber the user's current active engine
+# or reorder their preferences. If the engine is already listed, we're
+# done; this step is fully idempotent.
+log "Registering KDictate in IBus preload-engines (if missing)"
+current_preload="$(run_as_user dconf read /desktop/ibus/general/preload-engines 2>/dev/null || true)"
+kdictate_engine_id="io.github.pizzimenti.KDictate1"
+if [[ "$current_preload" == *"'${kdictate_engine_id}'"* ]]; then
+    log "  already present; leaving preload-engines unchanged"
+elif [[ -z "$current_preload" || "$current_preload" == "@as []" || "$current_preload" == "[]" ]]; then
+    run_as_user dconf write /desktop/ibus/general/preload-engines \
+        "['xkb:us::eng', '${kdictate_engine_id}']"
+else
+    # Append by rewriting the closing bracket. dconf list syntax is
+    # "['a', 'b']" with single-quoted strings, so string-splicing the
+    # trailing ']' is a safe way to extend it without parsing GVariant.
+    new_preload="${current_preload%]}, '${kdictate_engine_id}']"
+    run_as_user dconf write /desktop/ibus/general/preload-engines "$new_preload"
 fi
 
 if command -v kwriteconfig6 >/dev/null 2>&1; then
