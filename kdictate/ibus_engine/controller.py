@@ -148,19 +148,13 @@ class DictationEngineController:
             self._hide_preedit(reason=f"state-{state}")
             return
 
-        if state == STATE_TRANSCRIBING:
+        if state in {STATE_RECORDING, STATE_TRANSCRIBING}:
             if self._can_render_status():
-                self._show_preedit(self._state.pending_partial, "transcribing")
-                self._logger.info("Transcribing animation started")
+                self._show_preedit(self._state.pending_partial, self._live_mode())
+                if state == STATE_TRANSCRIBING:
+                    self._logger.info("Transcribing animation started")
             else:
-                self._hide_preedit(reason="transcribing-without-focus")
-            return
-
-        if state == STATE_RECORDING:
-            if self._can_render_status():
-                self._show_preedit(self._state.pending_partial, "listening")
-            else:
-                self._hide_preedit(reason="recording-without-focus")
+                self._hide_preedit(reason=f"{state}-without-focus")
             return
 
     def handle_partial_transcript(self, text: str) -> None:
