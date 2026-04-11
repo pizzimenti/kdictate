@@ -109,6 +109,7 @@ class DictationDaemon:
         stream_factory: Callable[..., Any] | None = None,
         input_device_resolver: Callable[[], tuple[str, bool]] = resolve_default_input_device,
         transcription_fn: Callable[..., str] = transcribe_pcm,
+        notify_error_fn: Callable[[str, str], None] | None = None,
     ) -> None:
         self.config = config
         self.model = model
@@ -118,6 +119,9 @@ class DictationDaemon:
         self._stream_factory = stream_factory
         self._input_device_resolver = input_device_resolver
         self._transcription_fn = transcription_fn
+        # Desktop-notification side-effect, injected so tests can replace
+        # it with a no-op or a recorder. Default uses real notify-send.
+        self._notify_error_fn = notify_error_fn or self._send_desktop_notification
         self._lock = threading.RLock()
         self._recording = False
         self._starting = False
@@ -247,16 +251,28 @@ class DictationDaemon:
         self._event_sink.error_occurred(code, message)
 
     def _notify_error(self, summary: str, body: str) -> None:
-        """Show a desktop notification for a user-facing error.
+        """Dispatch a user-facing error notification through the injected hook.
 
         Rate-limited so rapid repeated toggles don't spam the desktop.
-        Silently skipped if notify-send is not available.
+        Tests inject a no-op or recording hook via ``notify_error_fn`` so
+        running the unit suite never fires real KDE notifications.
         """
 
         now = time.monotonic()
         if now - self._last_error_notify_time < self._ERROR_NOTIFY_COOLDOWN_S:
             return
         self._last_error_notify_time = now
+        try:
+            self._notify_error_fn(summary, body)
+        except Exception:  # noqa: BLE001
+            self._logger.exception("desktop notification hook raised")
+
+    def _send_desktop_notification(self, summary: str, body: str) -> None:
+        """Default notify-send shell-out used by the production daemon.
+
+        Silently skipped if notify-send is not on PATH.
+        """
+
         notify_send = shutil.which("notify-send")
         if notify_send is None:
             return
