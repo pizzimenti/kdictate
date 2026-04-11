@@ -54,7 +54,7 @@ class IbusEngineRuntimeTests(unittest.TestCase):
             Bus=SimpleNamespace(new=lambda: active_bus),
             Factory=SimpleNamespace(new=lambda connection: _FakeFactory(connection)),
             Engine=_FakeEngineBase,
-            BusRequestNameReply=SimpleNamespace(PRIMARY_OWNER=1, ALREADY_OWNER=4),
+            BusRequestNameReply=SimpleNamespace(PRIMARY_OWNER=1, IN_QUEUE=2, ALREADY_OWNER=4),
         )
 
     def test_initialize_runtime_claims_component_name_and_builds_factory(self) -> None:

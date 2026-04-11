@@ -346,6 +346,43 @@ def next_preload_engines(current_preload: str, engine_id: str) -> str | None:
     return f"{clean[:-1]}, {engine_token}]"
 
 
+def previous_preload_engines(current_preload: str, engine_id: str) -> str | None:
+    """Return the preload list with *engine_id* removed, or ``None`` if absent.
+
+    Inverse of :func:`next_preload_engines`. The reset script uses this so
+    that uninstalling kdictate does not also wipe other IBus engines the
+    user had configured (``ibus-anthy``, ``ibus-pinyin``, etc.). Returns
+    the empty-list literal ``"@as []"`` if removing the engine leaves the
+    list empty, so the caller can decide between ``dconf write`` and
+    ``dconf reset``.
+
+    Note on the ``@as`` GVariant type prefix: dconf may serve back the
+    current value as ``"@as ['x', 'y']"`` (the type-annotated form for an
+    "array of strings"). We strip the prefix for parsing and intentionally
+    do NOT restore it on the non-empty output — ``next_preload_engines``
+    has the same omission, and ``dconf write`` accepts both annotated
+    and unannotated forms for ``as`` values. The only place we emit the
+    annotated form is the empty terminal case ``"@as []"``, where the
+    annotation disambiguates from a string-typed empty array.
+    """
+
+    normalized = current_preload.strip()
+    engine_token = f"'{engine_id}'"
+    if not normalized or normalized in {"[]", "@as []"} or engine_token not in normalized:
+        return None
+
+    clean = normalized.removeprefix("@as ").strip()
+    if not (clean.startswith("[") and clean.endswith("]")):
+        raise ValueError(f"Unexpected dconf preload-engines value: {current_preload!r}")
+
+    inner = clean[1:-1]
+    parts = [p.strip() for p in inner.split(",")]
+    remaining = [p for p in parts if p and p != engine_token]
+    if not remaining:
+        return "@as []"
+    return f"[{', '.join(remaining)}]"
+
+
 def configure_preload_engines(ctx: InstallContext) -> None:
     """Ensure KDictate appears in the user's IBus preload engine list."""
 
@@ -417,25 +454,28 @@ def configure_kwin_input_method(ctx: InstallContext) -> None:
 
 
 def register_global_shortcut(ctx: InstallContext) -> None:
-    """Write the Ctrl+Space shortcut into kglobalshortcutsrc.
+    """Persist a Ctrl+Space entry into kglobalshortcutsrc.
 
-    KDE's X-KDE-Shortcuts auto-registration only happens at login.
-    During a running session we have to write the entry directly.
+    The running daemon claims Ctrl+Space directly from kwin_wayland via
+    its accessibility KeyboardMonitor (see ``kdictate.core.kwin_hotkey``),
+    so the live binding does not depend on this file at all. The ini
+    entry is written purely as a fallback so KDE's kcontrol shows
+    Ctrl+Space as taken by KDictate Toggle, and so a future user that
+    disables the KeyboardMonitor grab still has a working shortcut after
+    the next session start.
     """
 
     shortcut_file = ctx.home / ".config" / "kglobalshortcutsrc"
     section = f"[services][{TOGGLE_DESKTOP_NAME}]"
     entry = "_launch=Ctrl+Space, Ctrl+Space"
 
-    if shortcut_file.exists():
-        content = shortcut_file.read_text(encoding="utf-8")
-        if section in content:
-            return  # already registered
-    else:
-        content = ""
-
+    content = shortcut_file.read_text(encoding="utf-8") if shortcut_file.exists() else ""
+    if section in content:
+        return
     content = content.rstrip("\n") + f"\n\n{section}\n{entry}\n"
-    shortcut_file.write_text(content, encoding="utf-8")
+    # write_owned_text handles the pkexec privilege drop and refuses paths
+    # outside HOME, matching every other config file the installer writes.
+    write_owned_text(ctx, shortcut_file, content)
 
 
 def refresh_ibus_registry(ctx: InstallContext) -> None:

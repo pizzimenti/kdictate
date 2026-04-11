@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import tempfile
 import threading
 import unittest
@@ -104,7 +105,22 @@ def _make_config(runtime_paths: RuntimePaths) -> DictationConfig:
     )
 
 
+@patch.object(
+    DictationDaemon,
+    "_send_desktop_notification",
+    new=lambda self, summary, body: None,
+)
 class DictationDaemonTest(unittest.TestCase):
+    """Daemon tests with the real `notify-send` shell-out stubbed.
+
+    Without this class-level patch, any test that exercises an error
+    path on a real DictationDaemon (e.g. ``input_device_resolver``
+    returning ``("none", False)``) calls ``_notify_error`` which calls
+    real ``notify-send`` and pops a "Microphone unavailable"
+    notification on the developer's desktop. The patch replaces the
+    method on the class for the duration of every test in this class.
+    """
+
     def test_start_stop_emits_state_partial_and_final_events(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             runtime_paths = RuntimePaths(
@@ -591,8 +607,21 @@ class DictationDaemonTest(unittest.TestCase):
         runtime = {"device": "cpu", "compute_type": "int8", "cpu_threads": 1}
         config = SimpleNamespace(runtime_paths=object())
 
+        # Patch configure_logging and get_propagating_child so the real
+        # daemon.main() does NOT attach a FileHandler to the production
+        # log path (~/.local/state/kdictate/daemon.log) inside the test
+        # process. Without these patches, the FileHandler stays attached
+        # to the kdictate base logger after the test returns and every
+        # subsequent test that fires records through any kdictate.* child
+        # logger leaks into the production daemon log file.
+        fake_logger = logging.getLogger("kdictate.tests.fake_main_logger")
         with (
             patch("kdictate.core.daemon._load_model_and_config", return_value=(config, object(), runtime)),
+            patch("kdictate.core.daemon.configure_logging", return_value=fake_logger),
+            patch(
+                "kdictate.core.daemon.get_propagating_child",
+                lambda parent, suffix: parent.getChild(suffix),
+            ),
             patch("kdictate.core.daemon.DictationDaemon", FakeDaemon),
             patch("kdictate.service.dbus_service.SessionDbusService", FakeService),
         ):

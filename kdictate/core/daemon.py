@@ -29,7 +29,7 @@ from kdictate.config import DictationConfig, parse_args
 from kdictate.constants import STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_STARTING, STATE_TRANSCRIBING
 from kdictate.core.audio import resolve_default_input_device
 from kdictate.exceptions import AudioInputError, ConfigurationError, TranscriptionError
-from kdictate.logging_utils import configure_logging
+from kdictate.logging_utils import configure_logging, get_propagating_child
 from kdictate.runtime import RuntimePaths, write_last_text, write_state
 from kdictate.runtime_profile import resolve_runtime, set_thread_env
 
@@ -109,15 +109,19 @@ class DictationDaemon:
         stream_factory: Callable[..., Any] | None = None,
         input_device_resolver: Callable[[], tuple[str, bool]] = resolve_default_input_device,
         transcription_fn: Callable[..., str] = transcribe_pcm,
+        notify_error_fn: Callable[[str, str], None] | None = None,
     ) -> None:
         self.config = config
         self.model = model
         self.runtime_paths = runtime_paths
         self._event_sink = event_sink or _NullEventSink()
-        self._logger = logger or configure_logging("kdictate.core")
+        self._logger = logger or configure_logging("kdictate.daemon.core")
         self._stream_factory = stream_factory
         self._input_device_resolver = input_device_resolver
         self._transcription_fn = transcription_fn
+        # Desktop-notification side-effect, injected so tests can replace
+        # it with a no-op or a recorder. Default uses real notify-send.
+        self._notify_error_fn = notify_error_fn or self._send_desktop_notification
         self._lock = threading.RLock()
         self._recording = False
         self._starting = False
@@ -247,16 +251,28 @@ class DictationDaemon:
         self._event_sink.error_occurred(code, message)
 
     def _notify_error(self, summary: str, body: str) -> None:
-        """Show a desktop notification for a user-facing error.
+        """Dispatch a user-facing error notification through the injected hook.
 
         Rate-limited so rapid repeated toggles don't spam the desktop.
-        Silently skipped if notify-send is not available.
+        Tests inject a no-op or recording hook via ``notify_error_fn`` so
+        running the unit suite never fires real KDE notifications.
         """
 
         now = time.monotonic()
         if now - self._last_error_notify_time < self._ERROR_NOTIFY_COOLDOWN_S:
             return
         self._last_error_notify_time = now
+        try:
+            self._notify_error_fn(summary, body)
+        except Exception:  # noqa: BLE001
+            self._logger.exception("desktop notification hook raised")
+
+    def _send_desktop_notification(self, summary: str, body: str) -> None:
+        """Default notify-send shell-out used by the production daemon.
+
+        Silently skipped if notify-send is not on PATH.
+        """
+
         notify_send = shutil.which("notify-send")
         if notify_send is None:
             return
@@ -840,7 +856,22 @@ def _load_model_and_config(argv: list[str] | None = None) -> tuple[DictationConf
 def main(argv: list[str] | None = None) -> int:
     """Run the daemon as a long-lived GLib main loop process."""
 
-    logger = configure_logging("kdictate.core")
+    # Single base logger owns the FileHandler for daemon.log; the per-
+    # subsystem loggers are children that propagate up. Python's logging
+    # module gives every FileHandler its own lock, so attaching multiple
+    # FileHandler instances to the same path (one per subsystem) races
+    # and produces interleaved/garbled output. Funnel everything through
+    # one handler instead.
+    #
+    # Base logger name is "kdictate.daemon" rather than "kdictate" so
+    # sibling subtrees like "kdictate.ibus" (IBus engine, separate
+    # process) and "kdictate.tests" (unit test loggers) do not share
+    # this FileHandler via the root-level "kdictate" ancestor. Codex
+    # flagged on PR #6 that the broader name made daemon.log the sink
+    # for the entire kdictate.* hierarchy, which is how the test-leak
+    # bug fixed in b1cc382 was able to happen in the first place.
+    base_logger = configure_logging("kdictate.daemon", log_file="daemon.log")
+    logger = get_propagating_child(base_logger, "core")
     try:
         config, model, runtime = _load_model_and_config(argv)
     except (ConfigurationError, FileNotFoundError) as exc:
@@ -862,7 +893,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("failed to import session service: %s", exc)
         return 1
 
-    service = SessionDbusService(daemon, logger=configure_logging("kdictate.dbus"))
+    service = SessionDbusService(daemon, logger=get_propagating_child(base_logger, "dbus"))
 
     try:
         service.start()
@@ -871,6 +902,34 @@ def main(argv: list[str] | None = None) -> int:
         daemon.shutdown()
         return 1
     daemon.set_event_sink(service)
+
+    # KWin Wayland sends Ctrl+Space to whoever owns the screen-reader
+    # KeyboardMonitor name. kglobalaccel/.desktop registration alone leaves
+    # the shortcut inactive on a fresh install, so claim that name here and
+    # forward releases straight into the daemon's toggle.
+    from kdictate.core.kwin_hotkey import KwinHotkeyListener
+
+    hotkey_listener: KwinHotkeyListener | None = KwinHotkeyListener(
+        on_activate=daemon.toggle,
+        logger=get_propagating_child(base_logger, "hotkey"),
+    )
+    try:
+        hotkey_listener.start()
+    except Exception as exc:  # noqa: BLE001
+        # start() may have partially succeeded — e.g. RequestName claimed
+        # the Orca screen-reader name but SetKeyGrabs then failed because
+        # we are not on a kwin session. Drop everything we did claim so
+        # the leaked Orca name doesn't block assistive tooling for the
+        # rest of the daemon's lifetime.
+        try:
+            hotkey_listener.stop()
+        except Exception as cleanup_exc:  # noqa: BLE001
+            logger.warning(
+                "KWin hotkey listener cleanup after failed start raised: %s",
+                cleanup_exc,
+            )
+        logger.warning("KWin hotkey listener disabled: %s", exc)
+        hotkey_listener = None
 
     loop = GLib.MainLoop()
 
@@ -885,6 +944,11 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        if hotkey_listener is not None:
+            try:
+                hotkey_listener.stop()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("KWin hotkey listener stop failed: %s", exc)
         daemon.shutdown()
         service.stop()
 
