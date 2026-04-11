@@ -1,13 +1,38 @@
 #!/usr/bin/env python3
-"""Install KDictate into the current user's desktop session."""
+"""Install KDictate into the current user's desktop session.
+
+This installer runs entirely as the invoking user — no pkexec, no sudo,
+no root. The only system-level dependency is ``ibus`` (providing the
+``ibus`` and ``ibus-daemon`` binaries), and it must be installed through
+the distro package manager BEFORE running this script. The preflight
+check in ``run_full_install`` surfaces a clear error with install
+commands for the common package managers if those binaries are missing.
+
+Everything else lives under the user's ``$HOME``:
+
+* ``~/.local/share/kdictate/`` — runtime source tree + venv + Whisper model
+* ``~/.config/systemd/user/`` — user service unit
+* ``~/.local/share/dbus-1/services/`` — D-Bus session activation service
+* ``~/.local/share/ibus/component/`` — IBus engine metadata
+* ``~/.config/environment.d/`` — environment file for IBUS_COMPONENT_PATH
+* ``~/.config/plasma-workspace/env/`` — Plasma Wayland environment hook
+* ``~/.local/share/applications/`` — toggle .desktop file
+* ``~/.config/kglobalshortcutsrc`` — Ctrl+Space binding
+
+Previous versions of this script re-exec'd itself under pkexec and then
+juggled privilege drops, PKEXEC_UID lookups, chown-back loops, and symlink-
+attack mitigations across every config file write. PR #7 deleted all of
+that: the user already owns everything under ``$HOME``, so the installer
+just writes files directly.
+"""
 
 from __future__ import annotations
 
 import os
-import pwd
 import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, NoReturn, Sequence
@@ -29,22 +54,17 @@ KDE_VIRTUAL_KEYBOARD_DESKTOP = Path(
 
 @dataclass(frozen=True, slots=True)
 class InstallContext:
-    """Resolved paths and ownership for the current install run."""
+    """Resolved paths for the current install run.
+
+    All operations are performed as the invoking user, so we no longer
+    track install uid/gid or drop-back-to-user shell state. Everything
+    is derived from ``$HOME``.
+    """
 
     script_path: Path
     script_dir: Path
     home: Path
-    install_uid: int
-    install_gid: int
     runtime_dir: Path
-
-    @property
-    def needs_user_shell(self) -> bool:
-        return os.geteuid() == 0 and self.install_uid != 0
-
-    @property
-    def user_runtime_dir(self) -> Path:
-        return Path(f"/run/user/{self.install_uid}")
 
     @property
     def venv_dir(self) -> Path:
@@ -72,7 +92,7 @@ class InstallContext:
         }
 
 
-_TOTAL_STEPS = 12
+_TOTAL_STEPS = 11
 _current_step = 0
 
 
@@ -112,65 +132,40 @@ def require_command(name: str) -> None:
 
 
 def build_context() -> InstallContext:
-    """Resolve the target user, home, and runtime paths."""
+    """Resolve the invoking user's home and runtime paths."""
+
+    if os.geteuid() == 0:
+        die(
+            "The installer must run as your user, not root.\n\n"
+            "      KDictate installs everything under your home directory\n"
+            "      (~/.local/share, ~/.config) and does not need any root\n"
+            "      privileges. Run it without sudo/pkexec:\n\n"
+            "        ./install.py"
+        )
 
     script_path = Path(__file__).resolve()
-    script_dir = script_path.parent
-    if os.geteuid() == 0 and os.environ.get("PKEXEC_UID"):
-        install_uid = int(os.environ["PKEXEC_UID"])
-        user_entry = pwd.getpwuid(install_uid)
-        home = Path(user_entry.pw_dir)
-        install_gid = user_entry.pw_gid
-    elif os.geteuid() == 0:
-        die("Do not run the installer as root directly; use pkexec")
-    else:
-        install_uid = os.getuid()
-        install_gid = os.getgid()
-        home = Path.home()
     return InstallContext(
         script_path=script_path,
-        script_dir=script_dir,
-        home=home,
-        install_uid=install_uid,
-        install_gid=install_gid,
-        runtime_dir=home / ".local" / "share" / "kdictate",
+        script_dir=script_path.parent,
+        home=Path.home(),
+        runtime_dir=Path.home() / ".local" / "share" / "kdictate",
     )
 
 
 def run_command(
-    ctx: InstallContext,
     command: Sequence[str | Path],
     *,
-    as_user: bool = False,
     env: Mapping[str, str] | None = None,
     capture_output: bool = False,
     quiet: bool = False,
     check: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    """Run a subprocess with optional privilege drop back to the user."""
+    """Run a subprocess in the current (user) context."""
 
     args = [str(part) for part in command]
-    if as_user and ctx.needs_user_shell:
-        require_command("sudo")
-        user_env = {
-            "HOME": str(ctx.home),
-            "XDG_RUNTIME_DIR": str(ctx.user_runtime_dir),
-        }
-        if env:
-            user_env.update(env)
-        args = [
-            "sudo",
-            "-u",
-            f"#{ctx.install_uid}",
-            "env",
-            *[f"{key}={value}" for key, value in user_env.items()],
-            *args,
-        ]
-        proc_env = None
-    else:
-        proc_env = os.environ.copy()
-        if env:
-            proc_env.update(env)
+    proc_env = os.environ.copy()
+    if env:
+        proc_env.update(env)
     if quiet and not capture_output:
         capture_output = True
     return subprocess.run(
@@ -183,63 +178,41 @@ def run_command(
     )
 
 
-def _chown_home_path(ctx: InstallContext, path: Path) -> None:
-    """Reassign a path under HOME back to the user after root writes it."""
+def _ensure_under_home(ctx: InstallContext, destination: Path) -> None:
+    """Refuse to install to paths outside the invoking user's HOME.
 
-    if os.geteuid() != 0 or not path.exists():
-        return
-    current = path.resolve()
-    resolved_home = ctx.home.resolve()
-    if not current.is_relative_to(resolved_home):
-        return
-    while current.is_relative_to(resolved_home):
-        os.lchown(current, ctx.install_uid, ctx.install_gid)
-        if current == resolved_home:
-            break
-        current = current.parent
-
-
-def _safe_destination(destination: Path) -> Path:
-    """Remove a symlink at *destination* so subsequent writes are not redirected.
-
-    Under pkexec the installer runs as root against a user-controlled home
-    directory. A user-planted symlink at the destination would cause root to
-    overwrite the symlink target — a local privilege-escalation vector. This
-    helper removes the symlink (but not regular files, which are ours from a
-    previous install) so the caller can safely create the real file.
+    Originally a privilege-escalation mitigation when the installer ran
+    as root; now a typo guard plus a defensive check against stale
+    symlinks at the destination. Resolving *destination* itself (not
+    just ``destination.parent``) matters because a prior install or a
+    user-planted symlink at the target filename could point outside
+    HOME, and writing through that symlink would land the file where
+    the symlink points, not where we intended. ``strict=False`` so
+    non-existent paths (the common case on a fresh install) are still
+    canonicalized based on whatever components DO exist.
     """
 
-    if destination.is_symlink():
-        destination.unlink()
-    return destination
+    resolved = destination.resolve(strict=False)
+    if not resolved.is_relative_to(ctx.home.resolve()):
+        die(f"Refusing to write outside home tree: {destination} resolves to {resolved}")
 
 
-def write_owned_text(ctx: InstallContext, destination: Path, text: str, *, mode: int = 0o644) -> None:
-    """Write a text file under the target user's ownership."""
+def write_home_file(ctx: InstallContext, destination: Path, text: str, *, mode: int = 0o644) -> None:
+    """Write a text file under the user's home tree."""
 
-    resolved_parent = destination.parent.resolve()
-    if not resolved_parent.is_relative_to(ctx.home.resolve()):
-        die(f"Refusing to write outside home tree: {destination} resolves to {resolved_parent}")
-    resolved_parent.mkdir(parents=True, exist_ok=True)
-    _chown_home_path(ctx, destination.parent)
-    _safe_destination(destination)
+    _ensure_under_home(ctx, destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(text, encoding="utf-8")
     destination.chmod(mode)
-    _chown_home_path(ctx, destination)
 
 
-def copy_owned_file(ctx: InstallContext, source: Path, destination: Path, *, mode: int = 0o644) -> None:
-    """Copy a file into place under the target user's ownership."""
+def copy_home_file(ctx: InstallContext, source: Path, destination: Path, *, mode: int = 0o644) -> None:
+    """Copy a file into place under the user's home tree."""
 
-    resolved_parent = destination.parent.resolve()
-    if not resolved_parent.is_relative_to(ctx.home.resolve()):
-        die(f"Refusing to write outside home tree: {destination} resolves to {resolved_parent}")
-    resolved_parent.mkdir(parents=True, exist_ok=True)
-    _chown_home_path(ctx, destination.parent)
-    _safe_destination(destination)
+    _ensure_under_home(ctx, destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
     shutil.copyfile(source, destination)
     destination.chmod(mode)
-    _chown_home_path(ctx, destination)
 
 
 def render_template(source: Path, replacements: Mapping[str, str]) -> str:
@@ -261,16 +234,14 @@ def install_rendered_file(
     """Render and install a packaging template."""
 
     rendered = render_template(source, ctx.replacements)
-    write_owned_text(ctx, destination, rendered, mode=mode)
+    write_home_file(ctx, destination, rendered, mode=mode)
 
 
 def sync_runtime(ctx: InstallContext) -> None:
     """Sync the source tree payload that the runtime venv imports from."""
 
     ctx.runtime_dir.mkdir(parents=True, exist_ok=True)
-    _chown_home_path(ctx, ctx.runtime_dir)
     run_command(
-        ctx,
         [
             "rsync",
             "-a",
@@ -280,19 +251,18 @@ def sync_runtime(ctx: InstallContext) -> None:
             f"{ctx.script_dir / 'kdictate'}/",
             f"{ctx.runtime_dir / 'kdictate'}/",
         ],
-        as_user=True,
     )
-    copy_owned_file(ctx, ctx.script_dir / "requirements.txt", ctx.runtime_dir / "requirements.txt")
-    copy_owned_file(ctx, ctx.script_dir / "pyproject.toml", ctx.runtime_dir / "pyproject.toml")
+    copy_home_file(ctx, ctx.script_dir / "requirements.txt", ctx.runtime_dir / "requirements.txt")
+    copy_home_file(ctx, ctx.script_dir / "pyproject.toml", ctx.runtime_dir / "pyproject.toml")
 
 
 def install_python_environment(ctx: InstallContext) -> None:
     """Create the runtime venv and install dependencies plus the editable package."""
 
-    run_command(ctx, ["python3", "-m", "venv", str(ctx.venv_dir)], as_user=True, quiet=True)
-    run_command(ctx, [ctx.pip_bin, "install", "--upgrade", "pip"], as_user=True, quiet=True)
-    run_command(ctx, [ctx.pip_bin, "install", "-r", ctx.runtime_dir / "requirements.txt"], as_user=True, quiet=True)
-    run_command(ctx, [ctx.pip_bin, "install", "--no-deps", "-e", ctx.runtime_dir], as_user=True, quiet=True)
+    run_command(["python3", "-m", "venv", str(ctx.venv_dir)], quiet=True)
+    run_command([ctx.pip_bin, "install", "--upgrade", "pip"], quiet=True)
+    run_command([ctx.pip_bin, "install", "-r", ctx.runtime_dir / "requirements.txt"], quiet=True)
+    run_command([ctx.pip_bin, "install", "--no-deps", "-e", ctx.runtime_dir], quiet=True)
 
 
 def download_model(ctx: InstallContext) -> None:
@@ -300,17 +270,13 @@ def download_model(ctx: InstallContext) -> None:
 
     Always calls snapshot_download, which checks file hashes internally
     and only re-downloads incomplete or missing files. This handles both
-    fresh installs and interrupted downloads correctly.
+    fresh installs and interrupted downloads correctly. Invoked via a
+    direct ``subprocess.run`` so ``tqdm``'s TTY progress bar is preserved
+    — our ``run_command`` wrapper's ``capture_output`` path would
+    otherwise swallow it.
     """
 
     model_dir = ctx.runtime_dir / DEFAULT_MODEL_NAME
-
-    # Run the download outside run_command so the TTY is preserved for
-    # tqdm progress bars. subprocess user=/group= drops privileges
-    # cleanly without the sudo wrapper that kills the PTY.
-    dl_env = os.environ.copy()
-    dl_env["HOME"] = str(ctx.home)
-    dl_env["XDG_RUNTIME_DIR"] = str(ctx.user_runtime_dir)
     subprocess.run(
         [
             str(ctx.python_bin),
@@ -323,11 +289,7 @@ def download_model(ctx: InstallContext) -> None:
             ),
         ],
         check=True,
-        env=dl_env,
-        user=ctx.install_uid if os.geteuid() == 0 else None,
-        group=ctx.install_gid if os.geteuid() == 0 else None,
     )
-    _chown_home_path(ctx, model_dir)
 
 
 def next_preload_engines(current_preload: str, engine_id: str) -> str | None:
@@ -387,9 +349,7 @@ def configure_preload_engines(ctx: InstallContext) -> None:
     """Ensure KDictate appears in the user's IBus preload engine list."""
 
     result = run_command(
-        ctx,
         ["dconf", "read", "/desktop/ibus/general/preload-engines"],
-        as_user=True,
         capture_output=True,
         check=False,
     )
@@ -403,12 +363,9 @@ def configure_preload_engines(ctx: InstallContext) -> None:
         log(f"skipping preload-engines update: {exc}")
         return
     if new_preload is None:
-        pass  # already present
-        return
+        return  # already present
     run_command(
-        ctx,
         ["dconf", "write", "/desktop/ibus/general/preload-engines", new_preload],
-        as_user=True,
     )
 
 
@@ -418,10 +375,8 @@ def configure_kwin_input_method(ctx: InstallContext) -> None:
     if shutil.which("kwriteconfig6") is None:
         return
 
-    # configure_kwin_input_method runs silently under the parent step
     if KDE_VIRTUAL_KEYBOARD_DESKTOP.is_file():
         run_command(
-            ctx,
             [
                 "kwriteconfig6",
                 "--file",
@@ -432,13 +387,11 @@ def configure_kwin_input_method(ctx: InstallContext) -> None:
                 "InputMethod",
                 KDE_VIRTUAL_KEYBOARD_DESKTOP,
             ],
-            as_user=True,
         )
     else:
         log(f"Warning: {KDE_VIRTUAL_KEYBOARD_DESKTOP} not found; skipping InputMethod configuration")
 
     run_command(
-        ctx,
         [
             "kwriteconfig6",
             "--file",
@@ -449,7 +402,6 @@ def configure_kwin_input_method(ctx: InstallContext) -> None:
             "VirtualKeyboardEnabled",
             "true",
         ],
-        as_user=True,
     )
 
 
@@ -473,9 +425,7 @@ def register_global_shortcut(ctx: InstallContext) -> None:
     if section in content:
         return
     content = content.rstrip("\n") + f"\n\n{section}\n{entry}\n"
-    # write_owned_text handles the pkexec privilege drop and refuses paths
-    # outside HOME, matching every other config file the installer writes.
-    write_owned_text(ctx, shortcut_file, content)
+    write_home_file(ctx, shortcut_file, content)
 
 
 def refresh_ibus_registry(ctx: InstallContext) -> None:
@@ -486,7 +436,7 @@ def refresh_ibus_registry(ctx: InstallContext) -> None:
             f"{ctx.home / '.local/share/ibus/component'}:/usr/share/ibus/component"
         )
     }
-    run_command(ctx, ["ibus", "write-cache"], as_user=True, env=ibus_env, quiet=True)
+    run_command(["ibus", "write-cache"], env=ibus_env, quiet=True)
     # Toggle KWin's virtual keyboard off/on via D-Bus. This causes KWin to
     # relaunch ibus-ui-gtk3 --enable-wayland-im (which in turn starts
     # ibus-daemon), picking up the updated cache with our component.
@@ -498,21 +448,20 @@ def refresh_ibus_registry(ctx: InstallContext) -> None:
         set_method = "org.freedesktop.DBus.Properties.Set"
         for value in ("false", "true"):
             run_command(
-                ctx,
                 ["gdbus", "call", "--session",
                  "--dest", vk_dest, "--object-path", vk_path,
                  "--method", set_method, vk_iface, "enabled",
                  f"<boolean {value}>"],
-                as_user=True, quiet=True, check=False,
+                quiet=True, check=False,
             )
 
 
 def reload_systemd_user(ctx: InstallContext) -> None:
     """Reload, enable, and restart the KDictate user service."""
 
-    run_command(ctx, ["systemctl", "--user", "daemon-reload"], as_user=True, quiet=True)
-    run_command(ctx, ["systemctl", "--user", "enable", SERVICE_NAME], as_user=True, quiet=True)
-    run_command(ctx, ["systemctl", "--user", "restart", SERVICE_NAME], as_user=True, quiet=True)
+    run_command(["systemctl", "--user", "daemon-reload"], quiet=True)
+    run_command(["systemctl", "--user", "enable", SERVICE_NAME], quiet=True)
+    run_command(["systemctl", "--user", "restart", SERVICE_NAME], quiet=True)
 
 
 def print_summary(ctx: InstallContext) -> None:
@@ -526,11 +475,8 @@ def print_summary(ctx: InstallContext) -> None:
 def run_sync_only(ctx: InstallContext) -> int:
     """Fast dev loop that only syncs runtime sources and restarts the daemon."""
 
-    if os.geteuid() == 0:
-        die("--sync-only must run as your user, not root")
     sync_runtime(ctx)
     result = run_command(
-        ctx,
         ["systemctl", "--user", "restart", SERVICE_NAME],
         capture_output=True,
         check=False,
@@ -542,20 +488,45 @@ def run_sync_only(ctx: InstallContext) -> int:
     return 0
 
 
+def preflight_ibus() -> None:
+    """Verify the system has ibus installed, with a helpful error if not.
+
+    KDictate used to shell out to ``pacman -S ibus`` under pkexec to
+    install ibus as part of the flow. That coupled the whole installer
+    to root for what amounts to a one-time system dependency. Now the
+    installer runs entirely unprivileged and the user installs ibus
+    through their distro's package manager before running this script.
+    """
+
+    missing = [
+        cmd for cmd in ("ibus", "ibus-daemon") if shutil.which(cmd) is None
+    ]
+    if not missing:
+        return
+
+    die(
+        "KDictate needs ibus and ibus-daemon, which are not on PATH.\n\n"
+        "      Install them with your distro's package manager and re-run\n"
+        "      ./install.py:\n\n"
+        "        Arch / Manjaro:  sudo pacman -S --needed ibus\n"
+        "        Debian / Ubuntu: sudo apt install ibus\n"
+        "        Fedora:          sudo dnf install ibus\n\n"
+        "      (Missing: " + ", ".join(missing) + ")"
+    )
+
+
 def run_full_install(ctx: InstallContext) -> int:
-    """Perform the full root-assisted install flow."""
+    """Perform the full install flow as the invoking user."""
 
     print(f"\n  KDictate {__version__} installer\n")
 
-    for cmd in ("pacman", "python3", "systemctl", "gdbus", "rsync"):
+    preflight_ibus()
+    # gdbus is intentionally NOT required — refresh_ibus_registry already
+    # guards its usage with `if shutil.which("gdbus") is not None`, so
+    # missing gdbus degrades gracefully (the KWin virtual-keyboard toggle
+    # is skipped) instead of blocking the whole install.
+    for cmd in ("python3", "systemctl", "rsync", "dconf"):
         require_command(cmd)
-
-    step("Installing system dependencies")
-    run_command(ctx, ["pacman", "-S", "--noconfirm", "--needed", "ibus"], quiet=True)
-    require_command("dconf")
-    require_command("ibus")
-    require_command("ibus-daemon")
-    step_done("ibus")
 
     step("Syncing runtime files")
     sync_runtime(ctx)
@@ -588,12 +559,12 @@ def run_full_install(ctx: InstallContext) -> int:
     step_done()
 
     step("Installing KDE/Plasma integration")
-    copy_owned_file(ctx, ctx.script_dir / "packaging" / PLASMA_ENV_SCRIPT_NAME,
-                    ctx.home / ".config/plasma-workspace/env" / PLASMA_ENV_SCRIPT_NAME)
+    copy_home_file(ctx, ctx.script_dir / "packaging" / PLASMA_ENV_SCRIPT_NAME,
+                   ctx.home / ".config/plasma-workspace/env" / PLASMA_ENV_SCRIPT_NAME)
     install_rendered_file(ctx, ctx.script_dir / "packaging" / TOGGLE_DESKTOP_NAME,
                           ctx.home / ".local/share/applications" / TOGGLE_DESKTOP_NAME)
     if shutil.which("kbuildsycoca6") is not None:
-        run_command(ctx, ["kbuildsycoca6", "--noincremental"], as_user=True, quiet=True, check=False)
+        run_command(["kbuildsycoca6", "--noincremental"], quiet=True, check=False)
     register_global_shortcut(ctx)
     step_done()
 
@@ -613,18 +584,15 @@ def run_full_install(ctx: InstallContext) -> int:
     step("Activating KDictate input method")
     # The KWin toggle relaunches ibus-daemon asynchronously. Retry a few
     # times so the engine activation doesn't race the daemon startup.
-    import time as _time
     for attempt in range(5):
         result = run_command(
-            ctx,
             ["ibus", "engine", DBUS_INTERFACE],
-            as_user=True,
             quiet=True,
             check=False,
         )
         if result.returncode == 0:
             break
-        _time.sleep(1)
+        time.sleep(1)
     step_done()
 
     print_summary(ctx)
@@ -632,16 +600,13 @@ def run_full_install(ctx: InstallContext) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the installer."""
+    """Run the installer as the invoking user."""
 
     args = list(argv if argv is not None else sys.argv[1:])
     ctx = build_context()
 
     if args == ["--sync-only"]:
         return run_sync_only(ctx)
-
-    if os.geteuid() != 0:
-        os.execvp("pkexec", ["pkexec", sys.executable, str(ctx.script_path), *args])
 
     return run_full_install(ctx)
 
