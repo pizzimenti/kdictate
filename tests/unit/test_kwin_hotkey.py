@@ -137,7 +137,7 @@ class KwinHotkeyListenerStartTest(unittest.TestCase):
         self.connection = _FakeConnection(request_name_reply=1)
         self.callback = MagicMock()
         self.listener = KwinHotkeyListener(
-            on_release=self.callback,
+            on_activate=self.callback,
             connection=self.connection,
         )
         self.listener._load_gi = lambda: _fake_gi()  # type: ignore[assignment]
@@ -167,7 +167,7 @@ class KwinHotkeyListenerStartTest(unittest.TestCase):
     def test_request_name_failure_raises(self) -> None:
         self.connection = _FakeConnection(request_name_reply=3)  # 3 = EXISTS
         self.listener = KwinHotkeyListener(
-            on_release=self.callback,
+            on_activate=self.callback,
             connection=self.connection,
         )
         self.listener._load_gi = lambda: _fake_gi()  # type: ignore[assignment]
@@ -196,7 +196,7 @@ class KwinHotkeyListenerKeyEventTest(unittest.TestCase):
         self.callback = MagicMock()
         self.clock = _ManualClock()
         self.listener = KwinHotkeyListener(
-            on_release=self.callback,
+            on_activate=self.callback,
             connection=self.connection,
             clock=self.clock,
         )
@@ -230,8 +230,41 @@ class KwinHotkeyListenerKeyEventTest(unittest.TestCase):
 
     def test_press_after_dedupe_window_fires_again(self) -> None:
         # Two physical presses with a real gap between them must each fire.
+        # Gap must exceed _PRESS_DEDUPE_WINDOW_S (150ms).
         self._send(released=False)
-        self.clock.advance(0.100)  # 100ms — well outside the 20ms window
+        self.clock.advance(0.200)  # 200ms — well outside the 150ms window
+        self._send(released=False)
+        self.assertEqual(self.callback.call_count, 2)
+
+    def test_hardware_autorepeat_does_not_thrash_callback(self) -> None:
+        # Regression test for the codex P1 finding (kwin_hotkey.py:287)
+        # *empirically reproduced* on Manjaro KDE 6.5.6 on 2026-04-11.
+        # KWin's accessibility KeyboardMonitor delivers hardware
+        # autorepeat events at ~25 Hz / 40 ms intervals while the user
+        # holds Ctrl+Space. The previous fixed-window dedupe (20 ms)
+        # let every autorepeat slip through and refired the activation
+        # callback ~25 times per second.
+        #
+        # Simulate a 2-second hold: 50 press events at 40 ms intervals.
+        # The trailing-dedupe at 150 ms must collapse all 50 into a
+        # single activation.
+        for _ in range(50):
+            self._send(released=False)
+            self.clock.advance(0.040)
+        self.callback.assert_called_once_with()
+
+    def test_autorepeat_then_release_then_new_press_fires_twice(self) -> None:
+        # After a held key sequence ends (with or without a release
+        # event arriving), the next physical press more than one
+        # dedupe window later must fire. This is the recovery path
+        # for both the happy case (kwin delivered the release) and
+        # the Ctrl-first case (kwin dropped the release).
+        for _ in range(20):
+            self._send(released=False)
+            self.clock.advance(0.040)
+        # User releases Space → autorepeat stops, no more events.
+        # ~500 ms later they press again.
+        self.clock.advance(0.500)
         self._send(released=False)
         self.assertEqual(self.callback.call_count, 2)
 
@@ -274,7 +307,7 @@ class KwinHotkeyListenerStopTest(unittest.TestCase):
     def test_stop_unsubscribes_clears_grabs_and_releases_name(self) -> None:
         connection = _FakeConnection(request_name_reply=1)
         listener = KwinHotkeyListener(
-            on_release=lambda: None,
+            on_activate=lambda: None,
             connection=connection,
         )
         listener._load_gi = lambda: _fake_gi()  # type: ignore[assignment]
@@ -300,7 +333,7 @@ class KwinHotkeyListenerStopTest(unittest.TestCase):
             fail_methods=("SetKeyGrabs",),
         )
         listener = KwinHotkeyListener(
-            on_release=lambda: None,
+            on_activate=lambda: None,
             connection=connection,
         )
         listener._load_gi = lambda: _fake_gi()  # type: ignore[assignment]
@@ -327,7 +360,7 @@ class KwinHotkeyListenerStopTest(unittest.TestCase):
             fail_methods=("RequestName",),
         )
         listener = KwinHotkeyListener(
-            on_release=lambda: None,
+            on_activate=lambda: None,
             connection=connection,
         )
         listener._load_gi = lambda: _fake_gi()  # type: ignore[assignment]

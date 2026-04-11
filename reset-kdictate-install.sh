@@ -179,20 +179,30 @@ if command -v dconf >/dev/null; then
     say "Clearing kdictate from dconf preload-engines"
     current=$(dconf read /desktop/ibus/general/preload-engines 2>/dev/null || true)
     if [[ -n "$current" && "$current" == *"$ENGINE_NAME"* ]]; then
+        # Capture stdout AND the exit code so a ValueError from
+        # previous_preload_engines (raised on a malformed dconf value)
+        # surfaces as a real failure, not a misleading "no change" warn.
         new_value=$(
             cd "$(dirname "$0")" && \
             ENGINE="$ENGINE_NAME" CURRENT="$current" python3 - <<'PY'
 import os
 import sys
 from install import previous_preload_engines
-result = previous_preload_engines(os.environ["CURRENT"], os.environ["ENGINE"])
+try:
+    result = previous_preload_engines(os.environ["CURRENT"], os.environ["ENGINE"])
+except ValueError as exc:
+    print(f"previous_preload_engines raised ValueError: {exc}", file=sys.stderr)
+    sys.exit(2)
 if result is None:
     sys.exit(0)
 print(result)
 PY
         )
-        if [[ -z "$new_value" ]]; then
-            warn "previous_preload_engines returned no change; skipping write"
+        rc=$?
+        if [[ $rc -ne 0 ]]; then
+            fail "previous_preload_engines could not parse dconf value: $current"
+        elif [[ -z "$new_value" ]]; then
+            ok "kdictate not present in preload-engines (no change needed)"
         elif [[ "$new_value" == "@as []" ]]; then
             dconf reset /desktop/ibus/general/preload-engines
         else

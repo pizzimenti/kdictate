@@ -355,6 +355,15 @@ def previous_preload_engines(current_preload: str, engine_id: str) -> str | None
     the empty-list literal ``"@as []"`` if removing the engine leaves the
     list empty, so the caller can decide between ``dconf write`` and
     ``dconf reset``.
+
+    Note on the ``@as`` GVariant type prefix: dconf may serve back the
+    current value as ``"@as ['x', 'y']"`` (the type-annotated form for an
+    "array of strings"). We strip the prefix for parsing and intentionally
+    do NOT restore it on the non-empty output — ``next_preload_engines``
+    has the same omission, and ``dconf write`` accepts both annotated
+    and unannotated forms for ``as`` values. The only place we emit the
+    annotated form is the empty terminal case ``"@as []"``, where the
+    annotation disambiguates from a string-typed empty array.
     """
 
     normalized = current_preload.strip()

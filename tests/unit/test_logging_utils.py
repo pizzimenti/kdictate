@@ -4,9 +4,17 @@ from __future__ import annotations
 
 import io
 import logging
+import os
+import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
-from kdictate.logging_utils import configure_logging, get_propagating_child
+from kdictate.logging_utils import (
+    attach_file_handler,
+    configure_logging,
+    get_propagating_child,
+)
 
 
 class LoggingUtilsTests(unittest.TestCase):
@@ -107,3 +115,84 @@ class GetPropagatingChildTests(unittest.TestCase):
         for line, suffix in zip(lines, self._child_suffixes):
             self.assertIn(f"{self._parent_name}.{suffix}", line)
             self.assertIn(f"hello from {suffix}", line)
+
+
+class FileHandlerAttachmentTests(unittest.TestCase):
+    """Cover the configure_logging(log_file=) and attach_file_handler paths."""
+
+    def setUp(self) -> None:
+        # Each test gets its own private XDG_STATE_HOME so we never write
+        # into the real ~/.local/state/kdictate/ used by the production
+        # daemon. The tempdir is cleaned in tearDown.
+        self._tempdir = tempfile.TemporaryDirectory()
+        self._xdg_state = Path(self._tempdir.name)
+        self._env_patch = patch.dict(
+            os.environ, {"XDG_STATE_HOME": str(self._xdg_state)}
+        )
+        self._env_patch.start()
+        self._touched: list[logging.Logger] = []
+
+    def tearDown(self) -> None:
+        for logger in self._touched:
+            for handler in list(logger.handlers):
+                handler.close()
+                logger.removeHandler(handler)
+            logger.propagate = True
+        self._env_patch.stop()
+        self._tempdir.cleanup()
+
+    def _track(self, logger: logging.Logger) -> logging.Logger:
+        self._touched.append(logger)
+        return logger
+
+    def test_configure_logging_with_log_file_attaches_filehandler(self) -> None:
+        logger = self._track(
+            configure_logging(
+                "kdictate.tests.fh_attach",
+                log_file="test.log",
+            )
+        )
+
+        file_handlers = [
+            h for h in logger.handlers if isinstance(h, logging.FileHandler)
+        ]
+        self.assertEqual(len(file_handlers), 1)
+
+        target = self._xdg_state / "kdictate" / "test.log"
+        self.assertEqual(file_handlers[0].baseFilename, str(target))
+        # Emit a record and verify it actually lands in the file.
+        logger.info("hello file")
+        for handler in file_handlers:
+            handler.flush()
+        self.assertTrue(target.exists())
+        self.assertIn("hello file", target.read_text(encoding="utf-8"))
+
+    def test_attach_file_handler_is_idempotent(self) -> None:
+        logger = self._track(logging.getLogger("kdictate.tests.fh_idempotent"))
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+
+        attach_file_handler(logger, "test.log")
+        attach_file_handler(logger, "test.log")
+        attach_file_handler(logger, "test.log")
+
+        file_handlers = [
+            h for h in logger.handlers if isinstance(h, logging.FileHandler)
+        ]
+        self.assertEqual(len(file_handlers), 1)
+
+    def test_attach_file_handler_silently_skips_when_log_dir_unwritable(self) -> None:
+        logger = self._track(logging.getLogger("kdictate.tests.fh_no_dir"))
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+
+        with patch(
+            "kdictate.logging_utils._resolve_log_dir",
+            return_value=None,
+        ):
+            attach_file_handler(logger, "test.log")
+
+        file_handlers = [
+            h for h in logger.handlers if isinstance(h, logging.FileHandler)
+        ]
+        self.assertEqual(file_handlers, [])

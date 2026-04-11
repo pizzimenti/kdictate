@@ -39,13 +39,34 @@ DEFAULT_HOTKEY_KEYSYM = 0x0020  # XK_space
 DEFAULT_REQUIRED_MODIFIER_MASK = 0x04  # Control
 DEFAULT_IGNORED_MODIFIER_MASK = 0x12  # CapsLock + NumLock
 
-# KWin emits one KeyEvent per registered modifier mask permutation, so a
-# single physical Ctrl+Space press fans out into 4 events that all arrive
-# within microseconds of each other. Coalesce them into one activation by
-# rejecting press events that arrive within this window of the previous
-# accepted press. Set well above the kwin fan-out latency (~1ms) and well
-# below realistic intentional double-tap timing (~200ms).
-_PRESS_DEDUPE_WINDOW_S = 0.020
+# KWin's accessibility KeyboardMonitor delivers two kinds of "extra"
+# press events that we have to suppress to avoid firing the activation
+# callback more than once per physical keystroke:
+#
+# 1. Per-modifier-mask fan-out: kwin emits one KeyEvent per registered
+#    grab mask permutation. For Ctrl+Space with CapsLock/NumLock
+#    permutations, that's 4 events delivered within a few microseconds
+#    of the same physical press.
+#
+# 2. Hardware autorepeat: empirically (Manjaro KDE 6.5.6, 2026-04-11)
+#    kwin DOES forward keyboard autorepeat through this interface, at
+#    ~25 Hz / 40 ms intervals — confirmed by capturing precise journal
+#    timestamps during a held Ctrl+Space and seeing ~60 events over a
+#    2-second hold. Our earlier assumption that assistive-tech
+#    interfaces suppress autorepeat was wrong.
+#
+# Both are handled by a *trailing* dedupe: every press event resets
+# the window, even one that gets ignored. As long as new events keep
+# arriving inside the window, the gate stays closed. The chain only
+# "exits" when the user actually stops generating events — i.e. when
+# they release the key (whether or not kwin delivers a release
+# KeyEvent for that release; see _on_key_event for why we can't rely
+# on release events).
+#
+# Window must be > worst-case autorepeat interval (~60 ms with jitter)
+# and < realistic intentional double-tap timing (~200 ms+). 150 ms
+# gives ~2.5x headroom over autorepeat and ~30% margin under double-tap.
+_PRESS_DEDUPE_WINDOW_S = 0.150
 
 CLIENT_NAME = "org.gnome.Orca.KeyboardMonitor"
 MONITOR_BUS_NAME = "org.freedesktop.a11y.Manager"
@@ -97,7 +118,7 @@ class KwinHotkeyListener:
 
     def __init__(
         self,
-        on_release: Callable[[], None],
+        on_activate: Callable[[], None],
         *,
         keysym: int = DEFAULT_HOTKEY_KEYSYM,
         required_modifier_mask: int = DEFAULT_REQUIRED_MODIFIER_MASK,
@@ -106,10 +127,7 @@ class KwinHotkeyListener:
         connection: Any = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        # Parameter is named ``on_release`` for backwards compatibility
-        # with the previous release-driven implementation; semantically
-        # it now fires on press.
-        self._on_activate = on_release
+        self._on_activate = on_activate
         self._keysym = keysym
         self._required_modifier_mask = required_modifier_mask
         self._ignored_modifier_mask = ignored_modifier_mask
@@ -192,6 +210,16 @@ class KwinHotkeyListener:
     # -- internals ----------------------------------------------------------
 
     def _request_client_name(self, Gio: Any, GLib: Any) -> None:
+        # flags=0 means we do NOT pass DBUS_NAME_FLAG_ALLOW_REPLACEMENT,
+        # DBUS_NAME_FLAG_REPLACE_EXISTING, or DBUS_NAME_FLAG_DO_NOT_QUEUE.
+        # That third one is the key: without DO_NOT_QUEUE *cleared*, we
+        # would be queued behind any existing owner — but we also are
+        # not telling dbus to queue us, so the daemon resolves the call
+        # synchronously and returns either PRIMARY_OWNER (1) or
+        # NAME_EXISTS (3). DBUS_REQUEST_NAME_REPLY_IN_QUEUE (2) is
+        # only reachable when the caller passes ALLOW_REPLACEMENT
+        # without DO_NOT_QUEUE, which we never do — so it is
+        # intentionally absent from the success set below.
         reply = self._call(
             Gio,
             GLib,
@@ -288,11 +316,19 @@ class KwinHotkeyListener:
             # driven state machine.
             return
         now = self._clock()
-        if now - self._last_press_time < _PRESS_DEDUPE_WINDOW_S:
-            # Per-mask fan-out from the same physical press. Same
-            # physical activation, no-op.
-            return
+        within_dedupe = (now - self._last_press_time) < _PRESS_DEDUPE_WINDOW_S
+        # Trailing dedupe: every press event resets the window, even
+        # the ones that get ignored. As long as new events keep
+        # arriving inside the window, the gate stays closed. Without
+        # this, hardware autorepeat (~25 Hz) would refire the
+        # callback on every event because each one is "more than the
+        # window after the last fire". With it, a held key keeps
+        # rolling _last_press_time forward until the user actually
+        # releases — at which point the next press lands more than
+        # one window later and fires.
         self._last_press_time = now
+        if within_dedupe:
+            return
         self._logger.info("hotkey press state=0x%x keycode=%s", state, keycode)
         try:
             self._on_activate()

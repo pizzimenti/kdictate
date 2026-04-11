@@ -886,7 +886,7 @@ def main(argv: list[str] | None = None) -> int:
     from kdictate.core.kwin_hotkey import KwinHotkeyListener
 
     hotkey_listener: KwinHotkeyListener | None = KwinHotkeyListener(
-        on_release=daemon.toggle,
+        on_activate=daemon.toggle,
         logger=get_propagating_child(base_logger, "hotkey"),
     )
     try:
