@@ -1,6 +1,6 @@
 # KDictate Qt GUI -- Future Work
 
-The early GTK popup / HUD experiment is retired. The next UI direction is a
+The early GTK popup experiment is retired. The next UI direction is a
 Qt/KDE-first companion that presents dictation state cleanly without becoming a
 second text insertion path.
 
