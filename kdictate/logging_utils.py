@@ -62,6 +62,30 @@ def configure_logging(
     return logger
 
 
+def get_propagating_child(parent: logging.Logger, suffix: str) -> logging.Logger:
+    """Return a child logger that funnels its records up to *parent*.
+
+    Use this when several long-lived subsystems share a single log file:
+    attaching multiple ``FileHandler`` instances to the same path produces
+    interleaved/garbled output because Python's logging module gives each
+    handler its own lock with no cross-handler coordination. Instead,
+    attach one ``FileHandler`` to the parent and let children propagate
+    into it.
+
+    The returned logger is reset on every call: any handlers carried
+    over from prior initialization are removed and ``propagate`` is
+    forced to ``True``. This makes the call safe even if some other
+    import path has already touched ``logging.getLogger(parent.name +
+    "." + suffix)`` and left it in an unexpected state.
+    """
+
+    child = parent.getChild(suffix)
+    for handler in list(child.handlers):
+        child.removeHandler(handler)
+    child.propagate = True
+    return child
+
+
 def attach_file_handler(logger: logging.Logger, filename: str) -> None:
     """Attach a file handler under XDG_STATE_HOME/kdictate/<filename>.
 

@@ -169,13 +169,35 @@ else
     fail "systemctl --user daemon-reload failed"
 fi
 
-# -- 9. Reset dconf IBus preload-engines ----------------------------------
+# -- 9. Remove kdictate from dconf IBus preload-engines ------------------
+# Surgically remove just the kdictate entry — not `dconf reset`, which
+# would wipe any other IBus engines the user had configured (ibus-anthy,
+# ibus-pinyin, etc.). Uses install.previous_preload_engines so the
+# parsing matches install.next_preload_engines exactly.
 
 if command -v dconf >/dev/null; then
     say "Clearing kdictate from dconf preload-engines"
     current=$(dconf read /desktop/ibus/general/preload-engines 2>/dev/null || true)
     if [[ -n "$current" && "$current" == *"$ENGINE_NAME"* ]]; then
-        dconf reset /desktop/ibus/general/preload-engines
+        new_value=$(
+            cd "$(dirname "$0")" && \
+            ENGINE="$ENGINE_NAME" CURRENT="$current" python3 - <<'PY'
+import os
+import sys
+from install import previous_preload_engines
+result = previous_preload_engines(os.environ["CURRENT"], os.environ["ENGINE"])
+if result is None:
+    sys.exit(0)
+print(result)
+PY
+        )
+        if [[ -z "$new_value" ]]; then
+            warn "previous_preload_engines returned no change; skipping write"
+        elif [[ "$new_value" == "@as []" ]]; then
+            dconf reset /desktop/ibus/general/preload-engines
+        else
+            dconf write /desktop/ibus/general/preload-engines "$new_value"
+        fi
     fi
     after=$(dconf read /desktop/ibus/general/preload-engines 2>/dev/null || true)
     if [[ -n "$after" && "$after" == *"$ENGINE_NAME"* ]]; then

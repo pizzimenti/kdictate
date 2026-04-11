@@ -28,11 +28,16 @@ class _FakeVariant:
 class _FakeConnection:
     """Record every DBus call/subscription so the test can assert on them."""
 
-    def __init__(self, request_name_reply: int = 1) -> None:
+    def __init__(
+        self,
+        request_name_reply: int = 1,
+        fail_methods: tuple[str, ...] = (),
+    ) -> None:
         self.calls: list[dict] = []
         self.subscriptions: list[dict] = []
         self.unsubscribed: list[int] = []
         self._request_name_reply = request_name_reply
+        self._fail_methods = set(fail_methods)
         self._next_sub_id = 100
         self.signal_callback: Any = None
 
@@ -58,6 +63,8 @@ class _FakeConnection:
                 "parameters": parameters,
             }
         )
+        if method in self._fail_methods:
+            raise RuntimeError(f"fake D-Bus failure on {method}")
         if method == "RequestName":
             return _FakeVariant((self._request_name_reply,))
         return _FakeVariant(())
@@ -234,6 +241,60 @@ class KwinHotkeyListenerStopTest(unittest.TestCase):
         methods = [c["method"] for c in connection.calls]
         self.assertIn("SetKeyGrabs", methods)
         self.assertIn("ReleaseName", methods)
+
+    def test_stop_after_partial_start_releases_orca_name(self) -> None:
+        # RequestName succeeds (so the Orca name is squatted), but
+        # SetKeyGrabs raises — e.g. we are not on a KWin session.
+        # The caller is expected to invoke stop() to unwind, and
+        # stop() must release the Orca name so it doesn't leak for
+        # the rest of the daemon's lifetime.
+        connection = _FakeConnection(
+            request_name_reply=1,
+            fail_methods=("SetKeyGrabs",),
+        )
+        listener = KwinHotkeyListener(
+            on_release=lambda: None,
+            connection=connection,
+        )
+        listener._load_gi = lambda: _fake_gi()  # type: ignore[assignment]
+
+        with self.assertRaises(RuntimeError):
+            listener.start()
+        # Sanity: the partial start did claim the Orca name.
+        self.assertTrue(listener._owns_name)
+
+        connection.calls.clear()
+        listener.stop()
+
+        methods = [c["method"] for c in connection.calls]
+        self.assertIn("ReleaseName", methods)
+        self.assertFalse(listener._owns_name)
+
+    def test_stop_after_request_name_failure_is_quiet_noop(self) -> None:
+        # RequestName itself raises — start() never claimed anything
+        # and stop() must NOT call SetKeyGrabs or ReleaseName, because
+        # both would log noisy spurious warnings about state we never
+        # held.
+        connection = _FakeConnection(
+            request_name_reply=1,
+            fail_methods=("RequestName",),
+        )
+        listener = KwinHotkeyListener(
+            on_release=lambda: None,
+            connection=connection,
+        )
+        listener._load_gi = lambda: _fake_gi()  # type: ignore[assignment]
+
+        with self.assertRaises(RuntimeError):
+            listener.start()
+        self.assertFalse(listener._owns_name)
+
+        connection.calls.clear()
+        listener.stop()
+
+        methods = [c["method"] for c in connection.calls]
+        self.assertNotIn("SetKeyGrabs", methods)
+        self.assertNotIn("ReleaseName", methods)
 
 
 if __name__ == "__main__":

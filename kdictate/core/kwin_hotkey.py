@@ -119,7 +119,9 @@ class KwinHotkeyListener:
         )
 
     def stop(self) -> None:
-        """Release the grab and the squatted name. Safe to call repeatedly."""
+        """Release the grab and the squatted name. Safe to call repeatedly,
+        and safe to call after a partial start() failure — only the steps
+        that actually completed are rolled back."""
 
         if self._connection is None:
             return
@@ -130,19 +132,22 @@ class KwinHotkeyListener:
             except Exception as exc:  # noqa: BLE001
                 self._logger.warning("failed to unsubscribe key signal: %s", exc)
             self._signal_subscription = None
-        try:
-            self._call(
-                Gio,
-                GLib,
-                MONITOR_BUS_NAME,
-                MONITOR_OBJECT_PATH,
-                MONITOR_INTERFACE,
-                "SetKeyGrabs",
-                GLib.Variant("(aua(uu))", ([], [])),
-            )
-        except Exception as exc:  # noqa: BLE001
-            self._logger.warning("failed to clear KWin key grabs: %s", exc)
         if self._owns_name:
+            # Only clear key grabs if we ever owned the screen-reader name —
+            # kwin rejects SetKeyGrabs from any other peer, so calling it
+            # without owning the name just produces a noisy warning.
+            try:
+                self._call(
+                    Gio,
+                    GLib,
+                    MONITOR_BUS_NAME,
+                    MONITOR_OBJECT_PATH,
+                    MONITOR_INTERFACE,
+                    "SetKeyGrabs",
+                    GLib.Variant("(aua(uu))", ([], [])),
+                )
+            except Exception as exc:  # noqa: BLE001
+                self._logger.warning("failed to clear KWin key grabs: %s", exc)
             try:
                 self._call(
                     Gio,

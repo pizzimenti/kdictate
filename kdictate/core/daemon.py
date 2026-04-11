@@ -29,7 +29,7 @@ from kdictate.config import DictationConfig, parse_args
 from kdictate.constants import STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_STARTING, STATE_TRANSCRIBING
 from kdictate.core.audio import resolve_default_input_device
 from kdictate.exceptions import AudioInputError, ConfigurationError, TranscriptionError
-from kdictate.logging_utils import configure_logging
+from kdictate.logging_utils import configure_logging, get_propagating_child
 from kdictate.runtime import RuntimePaths, write_last_text, write_state
 from kdictate.runtime_profile import resolve_runtime, set_thread_env
 
@@ -840,7 +840,14 @@ def _load_model_and_config(argv: list[str] | None = None) -> tuple[DictationConf
 def main(argv: list[str] | None = None) -> int:
     """Run the daemon as a long-lived GLib main loop process."""
 
-    logger = configure_logging("kdictate.core", log_file="daemon.log")
+    # Single base logger owns the FileHandler for daemon.log; the per-
+    # subsystem loggers are children that propagate up. Python's logging
+    # module gives every FileHandler its own lock, so attaching multiple
+    # FileHandler instances to the same path (one per subsystem) races
+    # and produces interleaved/garbled output. Funnel everything through
+    # one handler instead.
+    base_logger = configure_logging("kdictate", log_file="daemon.log")
+    logger = get_propagating_child(base_logger, "core")
     try:
         config, model, runtime = _load_model_and_config(argv)
     except (ConfigurationError, FileNotFoundError) as exc:
@@ -862,7 +869,7 @@ def main(argv: list[str] | None = None) -> int:
         logger.error("failed to import session service: %s", exc)
         return 1
 
-    service = SessionDbusService(daemon, logger=configure_logging("kdictate.dbus", log_file="daemon.log"))
+    service = SessionDbusService(daemon, logger=get_propagating_child(base_logger, "dbus"))
 
     try:
         service.start()
@@ -880,11 +887,23 @@ def main(argv: list[str] | None = None) -> int:
 
     hotkey_listener: KwinHotkeyListener | None = KwinHotkeyListener(
         on_release=daemon.toggle,
-        logger=configure_logging("kdictate.hotkey", log_file="daemon.log"),
+        logger=get_propagating_child(base_logger, "hotkey"),
     )
     try:
         hotkey_listener.start()
     except Exception as exc:  # noqa: BLE001
+        # start() may have partially succeeded — e.g. RequestName claimed
+        # the Orca screen-reader name but SetKeyGrabs then failed because
+        # we are not on a kwin session. Drop everything we did claim so
+        # the leaked Orca name doesn't block assistive tooling for the
+        # rest of the daemon's lifetime.
+        try:
+            hotkey_listener.stop()
+        except Exception as cleanup_exc:  # noqa: BLE001
+            logger.warning(
+                "KWin hotkey listener cleanup after failed start raised: %s",
+                cleanup_exc,
+            )
         logger.warning("KWin hotkey listener disabled: %s", exc)
         hotkey_listener = None
 
