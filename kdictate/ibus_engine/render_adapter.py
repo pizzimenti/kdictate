@@ -1,7 +1,7 @@
 """IBus preedit render adapter with a simple spinner animation.
 
 The adapter owns a small animation state machine driven by a GLib timer.
-At 5Hz it cycles through ``_SPINNER_FRAMES`` and renders the current
+At 5 Hz it cycles through ``_SPINNER_FRAMES`` and renders the current
 frame as the trailing spinner next to the listening / transcribing label.
 
 Kept in its own module so the engine wiring stays small and the adapter
@@ -21,7 +21,7 @@ from gi.repository import GLib
 
 from kdictate.ibus_engine.controller import PreeditPresentation
 
-_SPINNER_MS = 125  # 4 frames × 125ms = 500ms per full rotation
+_SPINNER_MS = 200  # 4 frames × 200 ms = 800 ms per full rotation (5 Hz frame rate)
 _SPINNER_FRAMES = ("\u25d0", "\u25d3", "\u25d1", "\u25d2")  # ◐ ◓ ◑ ◒
 _MIC = "\U0001f399"  # 🎙 (studio microphone)
 _BRAIN = "\U0001f9e0"  # 🧠
