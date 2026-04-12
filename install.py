@@ -107,14 +107,14 @@ def step(message: str) -> None:
 
     global _current_step  # noqa: PLW0603
     _current_step += 1
-    print(f"  [{_current_step}/{_TOTAL_STEPS}] {message}...", end="", flush=True)
+    print(f"  \u2705 [{_current_step}/{_TOTAL_STEPS}] {message}", end="", flush=True)
 
 
 def step_done(detail: str = "") -> None:
-    """Complete the current step line with a checkmark."""
+    """Complete the current step line."""
 
     suffix = f" ({detail})" if detail else ""
-    print(f" \u2705{suffix}")
+    print(suffix)
 
 
 def die(message: str) -> NoReturn:
