@@ -9,7 +9,7 @@ KWin (compositor)
          └─ ibus-engine-kdictate          ← ibus-daemon starts this on demand
 
 systemd --user
- └─ kdictate-daemon --profile service     ← user service, owns mic/VAD/transcription
+ └─ kdictate-daemon                       ← user service, owns mic/VAD/transcription
 ```
 
 ## Who Starts What

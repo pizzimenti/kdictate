@@ -139,7 +139,6 @@ behavior stays consistent across shells and user services.
 
 ## Tuning
 
-- `--profile interactive|service`: named daemon presets. The installed user service uses `service`; ad-hoc CLI runs default to `interactive`.
 - `--cpu-threads N`: override thread count. Dictation-oriented defaults now use physical cores / short-form-friendly thread counts.
 - `--compute-type int8|float16|float32`: precision/runtime tradeoff.
 - `--language`: defaults to `en`.
@@ -160,7 +159,7 @@ behavior stays consistent across shells and user services.
 - `pyproject.toml`: package metadata and console-script entry points.
 - `requirements-dev.txt`: local development and test-only dependencies.
 - `kdictate/`: core package — D-Bus contract, daemon logic, IBus frontend, CLI, runtime utilities, audio helpers (`kdictate.audio_common`), and CPU thread / compute-type selection (`kdictate.runtime_profile`).
-- `packaging/kdictate-systemd.service`: systemd user unit for the core daemon (`ExecStart=... kdictate-daemon --profile service`).
+- `packaging/kdictate-systemd.service`: systemd user unit for the core daemon (`ExecStart=... kdictate-daemon`).
 - `packaging/io.github.pizzimenti.KDictate.service`: D-Bus session activation file (delegates to the systemd unit via `SystemdService=`).
 - `packaging/io.github.pizzimenti.KDictate.xml`: D-Bus introspection XML published on the session bus.
 - `packaging/io.github.pizzimenti.KDictate.component.xml`: IBus component metadata for the engine frontend.

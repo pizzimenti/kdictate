@@ -90,7 +90,7 @@ def load_model(config: DictationConfig) -> tuple[Any, dict[str, Any]]:
         device=runtime["device"],
         compute_type=runtime["compute_type"],
         cpu_threads=runtime["cpu_threads"],
-        num_workers=2,
+        num_workers=1,
     )
     return model, runtime
 
@@ -481,8 +481,10 @@ class DictationDaemon:
                 continue
             if item is None:
                 break
-            pcm_chunks, _audio_seconds = item
+            pcm_chunks, audio_seconds = item
+            pending = utterance_queue.qsize()
             try:
+                t0 = time.monotonic()
                 text = self._transcription_fn(
                     self.model,
                     pcm_chunks,
@@ -492,6 +494,7 @@ class DictationDaemon:
                     condition_on_previous_text=self.config.condition_on_previous_text,
                     vad_filter=self.config.vad_filter,
                 )
+                decode_s = time.monotonic() - t0
                 # One more generation check before publishing — the
                 # rotation may have happened during the (potentially
                 # long) transcribe call.
@@ -500,6 +503,10 @@ class DictationDaemon:
                         "decode worker dropping post-transcribe text after session rotation"
                     )
                     return
+                self._logger.info(
+                    "decode %.1fs audio in %.1fs (%.2fx RT, %d queued)",
+                    audio_seconds, decode_s, decode_s / max(audio_seconds, 0.01), pending,
+                )
                 if text:
                     self._record_partial_text(text)
             except Exception as exc:  # noqa: BLE001

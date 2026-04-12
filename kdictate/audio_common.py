@@ -46,7 +46,7 @@ def transcribe_pcm(
     beam_size: int = 1,
     no_speech_threshold: float = 0.6,
     condition_on_previous_text: bool = False,
-    vad_filter: bool = False,
+    vad_filter: bool = True,
 ) -> str:
     """Transcribe a list of int16 PCM chunks and return normalized text."""
     import numpy as np
@@ -84,10 +84,10 @@ class VADConfig:
     sample_rate: int = 16000
     block_ms: int = 30
     energy_threshold: float = 600.0
-    silence_ms: int = 220
+    silence_ms: int = 300
     min_speech_ms: int = 180
     start_speech_ms: int = 90
-    max_utterance_s: float = 2.5
+    max_utterance_s: float = 5.0
 
     @property
     def silence_blocks(self) -> int:

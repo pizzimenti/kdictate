@@ -1,4 +1,4 @@
 [D-BUS Service]
 Name=io.github.pizzimenti.KDictate1
-Exec=@@REPO_DIR@@/.venv/bin/kdictate-daemon --profile service
+Exec=@@REPO_DIR@@/.venv/bin/kdictate-daemon
 SystemdService=io.github.pizzimenti.KDictate.service

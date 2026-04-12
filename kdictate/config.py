@@ -7,11 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Sequence
 
-from kdictate.daemon_profiles import (
-    DAEMON_PROFILE_CHOICES,
-    DEFAULT_DAEMON_PROFILE,
-    daemon_arg_defaults,
-)
+from kdictate.daemon_profiles import daemon_arg_defaults
 from kdictate.runtime import RuntimePaths, default_runtime_paths
 
 
@@ -64,19 +60,13 @@ class DictationConfig:
         )
 
 
-def build_arg_parser(*, profile: str = DEFAULT_DAEMON_PROFILE) -> argparse.ArgumentParser:
+def build_arg_parser() -> argparse.ArgumentParser:
     """Create the daemon argument parser."""
 
     runtime_paths = default_runtime_paths()
-    defaults = daemon_arg_defaults(profile)
+    defaults = daemon_arg_defaults()
     parser = argparse.ArgumentParser(
         description="KDictate daemon backed by session D-Bus."
-    )
-    parser.add_argument(
-        "--profile",
-        choices=DAEMON_PROFILE_CHOICES,
-        default=profile,
-        help="Named daemon tuning profile.",
     )
     parser.add_argument(
         "--model-dir",
@@ -165,21 +155,7 @@ def build_arg_parser(*, profile: str = DEFAULT_DAEMON_PROFILE) -> argparse.Argum
     return parser
 
 
-def _parse_profile(argv: Sequence[str] | None = None) -> str:
-    """Read the selected daemon profile before building the full parser."""
-
-    bootstrap = argparse.ArgumentParser(add_help=False)
-    bootstrap.add_argument(
-        "--profile",
-        choices=DAEMON_PROFILE_CHOICES,
-        default=DEFAULT_DAEMON_PROFILE,
-    )
-    namespace, _ = bootstrap.parse_known_args(argv)
-    return namespace.profile
-
-
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     """Parse daemon arguments."""
 
-    profile = _parse_profile(argv)
-    return build_arg_parser(profile=profile).parse_args(argv)
+    return build_arg_parser().parse_args(argv)
