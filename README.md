@@ -140,9 +140,9 @@ behavior stays consistent across shells and user services.
 ## GPU mode (optional)
 
 KDictate can optionally use whisper.cpp with Vulkan for GPU-accelerated
-transcription. This can reduce the ~5s per-utterance decode time on CPU
-to ~1-2s on supported GPUs. No vendor-specific drivers (ROCm, CUDA) are
-required -- Vulkan works across AMD, NVIDIA, and Intel GPUs.
+transcription.  This cuts the ~5s per-utterance decode time on CPU to
+~2.5s.  No vendor-specific drivers (ROCm, CUDA) are required — Vulkan
+works across AMD, NVIDIA, and Intel GPUs.
 
 ### Setup
 
@@ -152,14 +152,15 @@ required -- Vulkan works across AMD, NVIDIA, and Intel GPUs.
    yay -S whisper.cpp-vulkan
    ```
 
-2. Run the installer — it detects GPU availability automatically and
-   prompts you to choose:
+2. Run the installer — it detects GPU availability and prompts:
    ```bash
    python3 install.py
    ```
-   If GPU mode is selected, the installer downloads the GGML model
-   (~1.6 GB) and configures the systemd service to try GPU first with
-   CPU fallback (`--backend auto`).
+   If GPU mode is selected, the installer downloads the Q8_0 GGML
+   model (~874 MB) and configures the systemd service with
+   `--backend auto` (try GPU, fall back to CPU).
+
+See `docs/gpu-mode.md` for architecture details and benchmark results.
 
 ## Tuning
 
