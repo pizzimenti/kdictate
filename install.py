@@ -541,26 +541,149 @@ def preflight_ibus() -> None:
     if not missing:
         return
 
+    distro = _detect_distro()
+    if distro == "arch":
+        hint = "sudo pacman -S --needed ibus"
+    elif distro == "debian":
+        hint = "sudo apt install ibus"
+    elif distro == "fedora":
+        hint = "sudo dnf install ibus"
+    else:
+        hint = "install ibus with your distro's package manager"
+
     die(
         "KDictate needs ibus and ibus-daemon, which are not on PATH.\n\n"
-        "      Install them with your distro's package manager and re-run\n"
-        "      ./install.py:\n\n"
-        "        Arch / Manjaro:  sudo pacman -S --needed ibus\n"
-        "        Debian / Ubuntu: sudo apt install ibus\n"
-        "        Fedora:          sudo dnf install ibus\n\n"
+        f"      Install:  {hint}\n\n"
         "      (Missing: " + ", ".join(missing) + ")"
     )
 
 
-def run_full_install(ctx: InstallContext, *, gpu: bool = False) -> int:
+def _detect_distro() -> str:
+    """Return a distro family: 'arch', 'debian', 'fedora', or 'unknown'."""
+    try:
+        text = Path("/etc/os-release").read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return "unknown"
+    text_lower = text.lower()
+    if "arch" in text_lower or "manjaro" in text_lower or "endeavour" in text_lower:
+        return "arch"
+    if "ubuntu" in text_lower or "debian" in text_lower or "mint" in text_lower:
+        return "debian"
+    if "fedora" in text_lower or "rhel" in text_lower or "centos" in text_lower:
+        return "fedora"
+    return "unknown"
+
+
+def _gpu_install_hint(distro: str) -> str:
+    """Return a distro-specific install command for whisper.cpp + Vulkan."""
+    if distro == "arch":
+        return "yay -S whisper.cpp-vulkan"
+    if distro == "debian":
+        return "# whisper.cpp must be built from source with -DGGML_VULKAN=1 on Debian/Ubuntu"
+    if distro == "fedora":
+        return "# whisper.cpp must be built from source with -DGGML_VULKAN=1 on Fedora"
+    return "# install whisper.cpp with Vulkan support for your distribution"
+
+
+def _detect_gpu() -> tuple[str | None, list[str]]:
+    """Check for whisper.cpp and a Vulkan-capable GPU.
+
+    Returns (binary_path, reasons) where reasons is empty on success
+    or a list of strings explaining why GPU mode is unavailable.
+    """
+    reasons: list[str] = []
+    distro = _detect_distro()
+
+    binary = shutil.which("whisper-cli") or shutil.which("whisper-cpp") or shutil.which("main")
+    if binary is None:
+        hint = _gpu_install_hint(distro)
+        reasons.append(f"whisper.cpp not found on PATH\n        Install it:  {hint}")
+
+    # Check for Vulkan ICD (installable client driver) presence.
+    vulkan_icd = shutil.which("vulkaninfo")
+    if vulkan_icd is None:
+        if distro == "arch":
+            hint = "sudo pacman -S vulkan-tools"
+        elif distro == "debian":
+            hint = "sudo apt install vulkan-tools"
+        elif distro == "fedora":
+            hint = "sudo dnf install vulkan-tools"
+        else:
+            hint = "install vulkan-tools for your distribution"
+        reasons.append(f"vulkaninfo not found (needed to verify GPU)\n        Install it:  {hint}")
+    elif binary is not None:
+        try:
+            result = subprocess.run(
+                ["vulkaninfo", "--summary"],
+                capture_output=True,
+                timeout=5,
+            )
+            if result.returncode != 0:
+                reasons.append("vulkaninfo failed — no Vulkan-capable GPU detected")
+        except (OSError, subprocess.TimeoutExpired):
+            reasons.append("vulkaninfo timed out or crashed")
+
+    return binary, reasons
+
+
+def _prompt_backend() -> bool:
+    """Auto-detect GPU availability and ask the user which backend to install.
+
+    Returns True for GPU mode, False for CPU-only.
+    """
+    binary, reasons = _detect_gpu()
+
+    if not reasons:
+        print("  GPU acceleration is available:\n")
+        print(f"    whisper.cpp: {binary}")
+        print("    Vulkan:      supported\n")
+        print("    [1] GPU mode  (whisper.cpp + Vulkan, faster)")
+        print("    [2] CPU mode  (faster-whisper, no extra deps)\n")
+        while True:
+            choice = input("  Select [1/2]: ").strip()
+            if choice == "1":
+                return True
+            if choice == "2":
+                return False
+            print("    Please enter 1 or 2.")
+    else:
+        print("  GPU acceleration is not available:\n")
+        for reason in reasons:
+            print(f"    - {reason}")
+        print()
+        while True:
+            choice = input("  Proceed with CPU-only install? [Y/n]: ").strip().lower()
+            if choice in ("", "y", "yes"):
+                return False
+            if choice in ("n", "no"):
+                die("Install cancelled.")
+            print("    Please enter Y or N.")
+
+    return False
+
+
+def run_full_install(ctx: InstallContext) -> int:
     """Perform the full install flow as the invoking user."""
+
+    print(f"\n  KDictate {__version__} installer\n")
+
+    gpu = _prompt_backend()
+
+    # Rebuild context with GPU flag so templates render correctly.
+    if gpu != ctx.gpu:
+        ctx = InstallContext(
+            script_path=ctx.script_path,
+            script_dir=ctx.script_dir,
+            home=ctx.home,
+            runtime_dir=ctx.runtime_dir,
+            gpu=gpu,
+        )
 
     global _TOTAL_STEPS  # noqa: PLW0603
     if gpu:
         _TOTAL_STEPS += 1
 
-    print(f"\n  KDictate {__version__} installer\n")
-
+    print()
     preflight_ibus()
     # gdbus is intentionally NOT required — refresh_ibus_registry already
     # guards its usage with `if shutil.which("gdbus") is not None`, so
@@ -650,13 +773,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the installer as the invoking user."""
 
     args = list(argv if argv is not None else sys.argv[1:])
-    gpu = "--gpu" in args
-    ctx = build_context(gpu=gpu)
+    ctx = build_context()
 
     if args == ["--sync-only"]:
         return run_sync_only(ctx)
 
-    return run_full_install(ctx, gpu=gpu)
+    return run_full_install(ctx)
 
 
 if __name__ == "__main__":

@@ -152,24 +152,14 @@ required -- Vulkan works across AMD, NVIDIA, and Intel GPUs.
    yay -S whisper.cpp-vulkan
    ```
 
-2. Download the GGML model during install:
+2. Run the installer — it detects GPU availability automatically and
+   prompts you to choose:
    ```bash
-   python3 install.py --gpu
+   python3 install.py
    ```
-   Or download manually:
-   ```bash
-   pip install huggingface_hub
-   python3 -c "from huggingface_hub import hf_hub_download; hf_hub_download('ggerganov/whisper.cpp', 'ggml-large-v3-turbo.bin', local_dir='$HOME/.local/share/kdictate')"
-   ```
-
-3. Start the daemon with GPU backend:
-   ```bash
-   kdictate-daemon --backend gpu    # require GPU, fail if unavailable
-   kdictate-daemon --backend auto   # try GPU, fall back to CPU
-   ```
-
-The default is `--backend cpu` which uses faster-whisper and requires no
-extra dependencies.
+   If GPU mode is selected, the installer downloads the GGML model
+   (~1.6 GB) and configures the systemd service to try GPU first with
+   CPU fallback (`--backend auto`).
 
 ## Tuning
 
