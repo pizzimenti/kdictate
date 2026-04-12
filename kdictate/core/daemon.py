@@ -493,10 +493,11 @@ class DictationDaemon:
                         "decode worker dropping post-transcribe text after session rotation"
                     )
                     return
+                preview = (text[:40] + "...") if len(text) > 40 else text
                 self._logger.info(
-                    "decode %.1fs audio in %.1fs (%.2fx RT, %d queued) -> %d chars",
+                    "decode %.1fs audio in %.1fs (%.2fx RT, %d queued) -> %d chars [%s]",
                     audio_seconds, decode_s, decode_s / max(audio_seconds, 0.01), pending,
-                    len(text),
+                    len(text), preview,
                 )
                 if text:
                     self._record_partial_text(text)

@@ -163,12 +163,15 @@ class VADSegmenter:
             nonlocal trailing_silence_count, utterance_pcm, pending_speech_pcm, pending_silence_pcm
             if speech_block_count >= min_speech_blocks and utterance_pcm:
                 audio_seconds = sum(len(c) for c in utterance_pcm) / float(cfg.sample_rate)
+                avg_rms = float(np.sqrt(np.mean(
+                    np.concatenate(utterance_pcm).astype(np.float32) ** 2
+                )))
                 pending = self.utterance_queue.qsize()
                 try:
                     self.utterance_queue.put_nowait((list(utterance_pcm), audio_seconds))
                     logger.info(
-                        "utterance committed: %.1fs audio, %d blocks, %d queued",
-                        audio_seconds, speech_block_count, pending,
+                        "utterance committed: %.1fs audio, %d blocks, %d queued, avg_rms=%.0f",
+                        audio_seconds, speech_block_count, pending, avg_rms,
                     )
                 except queue.Full:
                     logger.warning("utterance dropped (queue full): %.1fs audio", audio_seconds)
