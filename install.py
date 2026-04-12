@@ -71,6 +71,7 @@ class InstallContext:
     script_dir: Path
     home: Path
     runtime_dir: Path
+    gpu: bool = False
 
     @property
     def venv_dir(self) -> Path:
@@ -95,6 +96,7 @@ class InstallContext:
             "@@ENGINE_EXEC@@": str(self.engine_exec),
             "@@HOME@@": str(self.home),
             "@@APP_VERSION@@": __version__,
+            "@@BACKEND_FLAGS@@": " --backend auto" if self.gpu else "",
         }
 
 
@@ -137,7 +139,7 @@ def require_command(name: str) -> None:
         die(f"Required command not found: {name}\n\n      Install it and re-run the installer.")
 
 
-def build_context() -> InstallContext:
+def build_context(*, gpu: bool = False) -> InstallContext:
     """Resolve the invoking user's home and runtime paths."""
 
     if os.geteuid() == 0:
@@ -155,6 +157,7 @@ def build_context() -> InstallContext:
         script_dir=script_path.parent,
         home=Path.home(),
         runtime_dir=Path.home() / ".local" / "share" / "kdictate",
+        gpu=gpu,
     )
 
 
@@ -647,12 +650,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     """Run the installer as the invoking user."""
 
     args = list(argv if argv is not None else sys.argv[1:])
-    ctx = build_context()
+    gpu = "--gpu" in args
+    ctx = build_context(gpu=gpu)
 
     if args == ["--sync-only"]:
         return run_sync_only(ctx)
 
-    gpu = "--gpu" in args
     return run_full_install(ctx, gpu=gpu)
 
 
