@@ -97,7 +97,7 @@ class VADConfig:
     energy_threshold: float = 1500.0
     silence_ms: int = 300
     min_speech_ms: int = 180
-    start_speech_ms: int = 90
+    start_speech_ms: int = 150
     max_utterance_s: float = 5.0
 
     @property

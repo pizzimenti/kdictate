@@ -23,6 +23,6 @@ def daemon_arg_defaults() -> dict[str, object]:
         "energy_threshold": 1500.0,
         "silence_ms": 300,
         "min_speech_ms": 180,
-        "start_speech_ms": 90,
+        "start_speech_ms": 150,
         "max_utterance_s": 5.0,
     }
