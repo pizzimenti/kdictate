@@ -196,5 +196,5 @@ See `docs/gpu-mode.md` for architecture details and benchmark results.
 
 ## Notes
 
-- CPU-only; no CUDA or ROCm required.
+- CPU by default; optional GPU acceleration via Vulkan (no CUDA or ROCm required).
 - The model (`Systran/faster-whisper-large-v3-turbo`, ~780 MB) is downloaded automatically on first install to `~/.local/share/kdictate/whisper-large-v3-turbo-ct2/`. Subsequent installs skip the download if the directory exists.

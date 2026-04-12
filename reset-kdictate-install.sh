@@ -18,7 +18,7 @@ RUNTIME_DIR="$HOME/.local/share/kdictate"
 MODEL_DIR="$RUNTIME_DIR/whisper-large-v3-turbo-ct2"
 MODEL_BIN="$MODEL_DIR/model.bin"
 GGML_BIN="$RUNTIME_DIR/ggml-large-v3-turbo-q8_0.bin"
-STAGE_DIR="/tmp/kdictate-model-stage-$$"
+STAGE_DIR=$(mktemp -d /tmp/kdictate-model-stage.XXXXXXXXXX)
 
 STATE_DIR="$HOME/.local/state/kdictate"
 IBUS_CACHE="$HOME/.cache/ibus"
@@ -103,7 +103,6 @@ fi
 # -- 4. Preserve model.bin ------------------------------------------------
 
 say "Preserving model files to $STAGE_DIR"
-mkdir -p "$STAGE_DIR"
 for src in "$MODEL_BIN" "$GGML_BIN"; do
     name=$(basename "$src")
     if [[ -f "$src" ]]; then
@@ -114,6 +113,7 @@ for src in "$MODEL_BIN" "$GGML_BIN"; do
                 ok "$name staged ($src_size bytes)"
             else
                 fail "staged $name size mismatch ($src_size vs $dst_size)"
+                rm -f "$STAGE_DIR/$name"
             fi
         else
             fail "failed to stage $name"

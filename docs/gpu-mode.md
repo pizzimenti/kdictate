@@ -41,7 +41,7 @@ service so the daemon tries GPU first on every start.
 Nothing outside `backend.py` knows which backend is active.  The VAD
 segmenter, D-Bus service, IBus engine, and CLI are unchanged.
 
-```
+```text
 daemon.py
   └─ TranscriptionBackend.transcribe(pcm_chunks, audio_seconds) -> str
        ├─ FasterWhisperBackend  (CPU, delegates to transcribe_pcm)

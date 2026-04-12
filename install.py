@@ -299,10 +299,10 @@ def download_cpu_model(ctx: InstallContext) -> None:
 
 
 def download_gpu_model(ctx: InstallContext) -> None:
-    if GGML_MODEL_PATH.is_file():
-        log(f"GGML model already present")
-        return
     GGML_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # hf_hub_download checks file hashes internally and re-downloads
+    # incomplete or corrupt files, so we always call it (same as the
+    # CPU model's snapshot_download).
     subprocess.run([
         str(ctx.python_bin), "-u", "-c",
         f"from huggingface_hub import hf_hub_download; "
