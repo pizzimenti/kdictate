@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **IBus hot-start broken on fresh KDE Plasma Wayland install.** The
+  previous `gdbus VirtualKeyboard.enabled` toggle was a no-op: KWin had a
+  null `InputMethod` in memory because `kwriteconfig6` writes to disk but
+  KWin does not re-read `kwinrc` during a live session. Replaced with a
+  three-step sequence: `qdbus reconfigure` (makes KWin pick up the new
+  `InputMethod` key), `ibus-daemon -r -d` (bootstraps a registered
+  process), `ibus restart` (KWin detects the daemon death and re-launches
+  via `ibus-ui-gtk3 --enable-wayland-im` with the correct Wayland socket,
+  setting `VirtualKeyboard.available=true`).
+- **`troubleshoot.py` false negative on `InputMethod[$e]=` form.** KDE
+  KConfig may write the key as `InputMethod=` or `InputMethod[$e]=` (the
+  latter signals env-var expansion at read time). The diagnostic check
+  now matches both forms; previously the `[$e]=` variant was reported as
+  a config error on systems where it was actually correct.
+
+### Added
+
+- `troubleshoot.py`: diagnostic script that checks every layer of the
+  stack (system binaries, installed files, `environment.d` contents,
+  `kwinrc` settings, live KWin D-Bus state, IBus processes and engine
+  registration, systemd service, D-Bus ping, audio input device) and
+  prints a one-liner fix if anything is misconfigured.
+- `docs/architecture-ibus.md`: documents the KDE Plasma Wayland IBus
+  startup lifecycle, the compositor socket restriction that prevents
+  manual `ibus-ui-gtk3 --enable-wayland-im` invocation, and the working
+  hot-start sequence with rationale.
+
 ## 0.10.1 — 2026-05-04
 
 ### Added

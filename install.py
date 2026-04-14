@@ -401,16 +401,35 @@ def refresh_ibus_registry(ctx: InstallContext) -> None:
             f"{ctx.home / '.local/share/ibus/component'}:/usr/share/ibus/component"
         )
     }
+    # Update IBus component registry so ibus-daemon knows about the new engine.
     run_command(["ibus", "write-cache"], env=ibus_env, quiet=True)
-    if shutil.which("gdbus") is not None:
-        for value in ("false", "true"):
-            run_command([
-                "gdbus", "call", "--session",
-                "--dest", "org.kde.KWin", "--object-path", "/VirtualKeyboard",
-                "--method", "org.freedesktop.DBus.Properties.Set",
-                "org.kde.kwin.VirtualKeyboard", "enabled",
-                f"<boolean {value}>",
-            ], quiet=True, check=False)
+
+    # Tell KWin to re-read kwinrc so it picks up the InputMethod key written
+    # by configure_kwin_input_method in the same install run.  Without this,
+    # KWin still has a null InputMethod in memory and any subsequent restart
+    # attempt does nothing.
+    for qdbus in ("qdbus6", "qdbus"):
+        if shutil.which(qdbus) is not None:
+            run_command([qdbus, "org.kde.KWin", "/KWin", "reconfigure"],
+                        quiet=True, check=False)
+            break
+
+    # Bootstrap ibus-daemon so a registered process exists on the session bus.
+    # -r replaces any stale instance; -d daemonises so this call returns
+    # immediately.  We disable the panel here because KWin will re-launch the
+    # full ibus-ui-gtk3 --enable-wayland-im stack in the next step.
+    run_command(["ibus-daemon", "-r", "-d", "--panel", "disable"],
+                quiet=True, check=False)
+    time.sleep(1)
+
+    # "ibus restart" sends Exit() to the running daemon, then KWin detects the
+    # process death and re-launches it via the InputMethod desktop file:
+    #   ibus-ui-gtk3 --enable-wayland-im --exec-daemon …
+    # That re-launch registers the input method with the Wayland compositor and
+    # sets VirtualKeyboard.available=true.  The gdbus toggle alone cannot do
+    # this: it can only restart something already running via the Wayland IM
+    # protocol; it cannot cold-start the initial process.
+    run_command(["ibus", "restart"], quiet=True, check=False)
 
 
 def reload_systemd_user(ctx: InstallContext) -> None:
