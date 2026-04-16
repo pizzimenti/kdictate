@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.2 — 2026-04-16
+
+### Fixed
+
+- **Re-check cancellation after the pactl call.** `pactl` can take up
+  to its 3-second timeout to return, and a stop request arriving during
+  that window would still cause the daemon to spawn VAD and decode
+  worker threads before reaching the next cancellation gate. Added an
+  immediate `_cancel_start` check after `set_default_source_volume()`
+  so a cancelled activation no longer pays unnecessary thread-startup
+  and cleanup overhead.
+
 ## 0.10.1 — 2026-04-16
 
 ### Fixed

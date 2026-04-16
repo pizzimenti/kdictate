@@ -575,6 +575,17 @@ class DictationDaemon:
         # doesn't mutate the user's system volume for no reason.
         set_default_source_volume()
 
+        # Re-check cancellation: set_default_source_volume() shells out to
+        # pactl and can take up to its 3s timeout. A stop arriving during
+        # that window should abort before we spin up VAD/decode threads.
+        if self._cancel_start.is_set():
+            with self._lock:
+                self._starting = False
+                self._cancel_start.clear()
+            self._logger.info("recording start cancelled before activation")
+            self._write_state(STATE_IDLE)
+            return
+
         # Start decode before VAD so the decode worker is ready to consume
         # utterances the moment VAD enqueues them.
         self._handles.decode_thread = threading.Thread(
