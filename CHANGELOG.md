@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.10.0 — 2026-04-16
+
+### Fixed
+
+- **Restore mic input gain on every activation.** The VAD's
+  `energy_threshold` (1500 RMS) assumes the mic is audible, but Plasma
+  controls, call apps, and per-app auto-gain can silently drop the
+  default source's volume below that floor — producing sessions that
+  record cleanly but emit `no speech detected` because the RMS never
+  crosses threshold. The daemon now calls
+  `pactl set-source-volume @DEFAULT_SOURCE@ 91%` right after mic
+  validation on every start, so the next capture has a known-good
+  gain. pactl failures are logged but non-fatal — recording still
+  proceeds.
+
 ## 0.9.2 — 2026-04-16
 
 ### Fixed

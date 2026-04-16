@@ -27,7 +27,7 @@ from kdictate.audio_common import (
 from kdictate.backend import TranscriptionBackend, create_cpu_backend
 from kdictate.config import DictationConfig, parse_args
 from kdictate.constants import STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_STARTING, STATE_TRANSCRIBING
-from kdictate.core.audio import resolve_default_input_device
+from kdictate.core.audio import resolve_default_input_device, set_default_source_volume
 from kdictate.exceptions import AudioInputError, ConfigurationError, TranscriptionError
 from kdictate.logging_utils import configure_logging, get_propagating_child
 from kdictate.runtime import RuntimePaths, write_last_text, write_state
@@ -558,6 +558,11 @@ class DictationDaemon:
             self._notify_error("Microphone unavailable", f"Default source is {mic_name}, which is not an input device.")
             self._write_state(STATE_IDLE)
             return
+
+        # Restore a known-good input gain on every activation — the VAD's
+        # energy_threshold assumes the mic is audible, and Plasma/KDE controls
+        # (or app-level auto-gain) can silently drop it below that floor.
+        set_default_source_volume()
 
         # Check for a stop that arrived while mic validation was in flight.
         if self._cancel_start.is_set():
