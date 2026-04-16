@@ -27,7 +27,7 @@ from kdictate.audio_common import (
 from kdictate.backend import TranscriptionBackend, create_cpu_backend
 from kdictate.config import DictationConfig, parse_args
 from kdictate.constants import STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_STARTING, STATE_TRANSCRIBING
-from kdictate.core.audio import resolve_default_input_device
+from kdictate.core.audio import resolve_default_input_device, set_default_source_volume
 from kdictate.exceptions import AudioInputError, ConfigurationError, TranscriptionError
 from kdictate.logging_utils import configure_logging, get_propagating_child
 from kdictate.runtime import RuntimePaths, write_last_text, write_state
@@ -560,6 +560,24 @@ class DictationDaemon:
             return
 
         # Check for a stop that arrived while mic validation was in flight.
+        if self._cancel_start.is_set():
+            with self._lock:
+                self._starting = False
+                self._cancel_start.clear()
+            self._logger.info("recording start cancelled before activation")
+            self._write_state(STATE_IDLE)
+            return
+
+        # Restore a known-good input gain on every activation — the VAD's
+        # energy_threshold assumes the mic is audible, and Plasma/KDE controls
+        # (or app-level auto-gain) can silently drop it below that floor.
+        # Placed after the cancellation gate so a stop-during-validation
+        # doesn't mutate the user's system volume for no reason.
+        set_default_source_volume()
+
+        # Re-check cancellation: set_default_source_volume() shells out to
+        # pactl and can take up to its 3s timeout. A stop arriving during
+        # that window should abort before we spin up VAD/decode threads.
         if self._cancel_start.is_set():
             with self._lock:
                 self._starting = False

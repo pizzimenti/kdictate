@@ -7,6 +7,7 @@ import subprocess
 from typing import Final
 
 DEFAULT_PACTL_TIMEOUT_S: Final[float] = 3.0
+ACTIVATION_MIC_VOLUME_PERCENT: Final[int] = 91
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -20,6 +21,29 @@ def _run_pactl(*args: str) -> subprocess.CompletedProcess[str]:
         errors="replace",
         timeout=DEFAULT_PACTL_TIMEOUT_S,
     )
+
+
+def set_default_source_volume(percent: int = ACTIVATION_MIC_VOLUME_PERCENT) -> bool:
+    """Set the default PulseAudio/PipeWire source volume to ``percent``.
+
+    Returns ``True`` on success, ``False`` if pactl was unavailable or exited
+    with a non-zero status. Logs warnings but does not raise — recording should
+    still proceed even if the volume adjustment fails.
+    """
+
+    try:
+        result = _run_pactl("set-source-volume", "@DEFAULT_SOURCE@", f"{percent}%")
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.warning("pactl set-source-volume failed: %s", exc)
+        return False
+
+    if result.returncode != 0:
+        _LOGGER.warning(
+            "pactl set-source-volume @DEFAULT_SOURCE@ %d%% exited %d: %s",
+            percent, result.returncode, result.stderr.strip(),
+        )
+        return False
+    return True
 
 
 def resolve_default_input_device() -> tuple[str, bool]:
