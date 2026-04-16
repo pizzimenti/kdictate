@@ -16,6 +16,48 @@ VAD_QUEUE_POLL_TIMEOUT_S = 0.15
 AUDIO_QUEUE_MAXSIZE = 512    # ~15s of 30ms blocks at 16kHz
 UTTERANCE_QUEUE_MAXSIZE = 64  # max in-flight utterances
 
+# Whisper models hallucinate these phrases on ambient noise / silence.
+# Comparison is case-insensitive with punctuation and extra whitespace
+# collapsed.  Filtered unconditionally — ambient mic noise produces RMS
+# well above any useful energy gate, so RMS-gating is ineffective.
+HALLUCINATION_PHRASES: frozenset[str] = frozenset({
+    "thank you",
+    "thanks for watching",
+    "thank you for watching",
+    "you",
+    "bye",
+    "goodbye",
+    "the end",
+    "thanks",
+    "so",
+    "okay",
+})
+
+#: Characters stripped before comparing against ``HALLUCINATION_PHRASES``.
+_PUNCT_TABLE = str.maketrans("", "", ".,!?;:…\"'""''()[]{}")
+
+def is_hallucination(text: str) -> bool:
+    """Return True if *text* matches a known Whisper hallucination phrase."""
+    normalized = " ".join(text.translate(_PUNCT_TABLE).strip().lower().split())
+    return normalized in HALLUCINATION_PHRASES
+
+
+def postprocess_transcript(text: str) -> str:
+    """Normalize whitespace and suppress known Whisper hallucination phrases.
+
+    Both backends should call this on raw transcript text before returning
+    it to the daemon.  Hallucination phrases are filtered unconditionally
+    because ambient microphone noise typically produces RMS well above any
+    useful energy threshold, making RMS-gating ineffective.
+    """
+    if not text:
+        return ""
+    text = " ".join(text.replace("\r", " ").replace("\n", " ").split())
+    if is_hallucination(text):
+        logger.info("suppressed hallucination: %r", text)
+        return ""
+    return text
+
 
 def load_whisper_model(
     model_dir: str | Path,
@@ -85,7 +127,7 @@ def transcribe_pcm(
     )
     if not text:
         return ""
-    return " ".join(text.replace("\r", " ").replace("\n", " ").split())
+    return postprocess_transcript(text)
 
 
 @dataclass

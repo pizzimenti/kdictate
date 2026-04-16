@@ -599,8 +599,8 @@ class DictationDaemonTest(unittest.TestCase):
         events: list[str] = []
 
         class FakeDaemon:
-            def __init__(self, config, model, runtime_paths, *, logger=None) -> None:
-                del config, model, runtime_paths, logger
+            def __init__(self, config, backend, runtime_paths, *, logger=None) -> None:
+                del config, backend, runtime_paths, logger
                 events.append("daemon.init")
 
             def set_event_sink(self, sink) -> None:
@@ -619,8 +619,10 @@ class DictationDaemonTest(unittest.TestCase):
                 events.append("service.start")
                 raise RuntimeError("boom")
 
-        runtime = {"device": "cpu", "compute_type": "int8", "cpu_threads": 1}
-        config = SimpleNamespace(runtime_paths=object())
+        fake_config = SimpleNamespace(
+            runtime_paths=object(),
+            backend="cpu",
+        )
 
         # Patch configure_logging and get_propagating_child so the real
         # daemon.main() does NOT attach a FileHandler to the production
@@ -631,7 +633,10 @@ class DictationDaemonTest(unittest.TestCase):
         # logger leaks into the production daemon log file.
         fake_logger = logging.getLogger("kdictate.tests.fake_main_logger")
         with (
-            patch("kdictate.core.daemon._load_model_and_config", return_value=(config, object(), runtime)),
+            patch("kdictate.core.daemon.parse_args", return_value=SimpleNamespace()),
+            patch("kdictate.core.daemon.DictationConfig.from_namespace", return_value=fake_config),
+            patch("kdictate.core.daemon.load_model", return_value=(object(), {"device": "cpu", "compute_type": "int8", "cpu_threads": 1})),
+            patch("kdictate.core.daemon.create_cpu_backend", return_value=object()),
             patch("kdictate.core.daemon.configure_logging", return_value=fake_logger),
             patch(
                 "kdictate.core.daemon.get_propagating_child",

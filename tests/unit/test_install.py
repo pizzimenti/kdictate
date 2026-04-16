@@ -38,7 +38,7 @@ class InstallHelperTests(unittest.TestCase):
         )
 
     def test_next_preload_engines_rejects_unexpected_values(self) -> None:
-        with self.assertRaisesRegex(ValueError, "Unexpected dconf preload-engines value"):
+        with self.assertRaisesRegex(ValueError, "Unexpected preload-engines value"):
             install.next_preload_engines("not-a-list", DBUS_INTERFACE)
 
     # -- previous_preload_engines (the inverse) ------------------------------
@@ -89,7 +89,7 @@ class InstallHelperTests(unittest.TestCase):
         )
 
     def test_previous_preload_engines_rejects_unexpected_values(self) -> None:
-        with self.assertRaisesRegex(ValueError, "Unexpected dconf preload-engines value"):
+        with self.assertRaisesRegex(ValueError, "Unexpected preload-engines value"):
             install.previous_preload_engines(
                 f"not-a-list-but-contains-'{DBUS_INTERFACE}'",
                 DBUS_INTERFACE,

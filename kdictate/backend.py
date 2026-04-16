@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from kdictate.app_metadata import GGML_MODEL_PATH
-from kdictate.audio_common import transcribe_pcm
+from kdictate.audio_common import postprocess_transcript, transcribe_pcm
 from kdictate.exceptions import TranscriptionError
 
 logger = logging.getLogger("kdictate.daemon.backend")
@@ -158,7 +158,7 @@ class WhisperCppBackend:
         text = result.stdout.decode(errors="replace").strip()
         if not text:
             return ""
-        return " ".join(text.replace("\r", " ").replace("\n", " ").split())
+        return postprocess_transcript(text)
 
 
 # ------------------------------------------------------------------
