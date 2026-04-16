@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from kdictate.app_metadata import GGML_MODEL_PATH
-from kdictate.audio_common import transcribe_pcm
+from kdictate.audio_common import _is_hallucination, transcribe_pcm
 from kdictate.exceptions import TranscriptionError
 
 logger = logging.getLogger("kdictate.daemon.backend")
@@ -158,7 +158,11 @@ class WhisperCppBackend:
         text = result.stdout.decode(errors="replace").strip()
         if not text:
             return ""
-        return " ".join(text.replace("\r", " ").replace("\n", " ").split())
+        text = " ".join(text.replace("\r", " ").replace("\n", " ").split())
+        if _is_hallucination(text):
+            logger.info("suppressed hallucination: %r", text)
+            return ""
+        return text
 
 
 # ------------------------------------------------------------------

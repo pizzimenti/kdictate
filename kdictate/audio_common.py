@@ -16,6 +16,29 @@ VAD_QUEUE_POLL_TIMEOUT_S = 0.15
 AUDIO_QUEUE_MAXSIZE = 512    # ~15s of 30ms blocks at 16kHz
 UTTERANCE_QUEUE_MAXSIZE = 64  # max in-flight utterances
 
+# Whisper models hallucinate these phrases on silence or near-silence.
+# Comparison is case-insensitive with punctuation stripped.
+_HALLUCINATION_PHRASES: frozenset[str] = frozenset({
+    "thank you",
+    "thanks for watching",
+    "thank you for watching",
+    "you",
+    "bye",
+    "goodbye",
+    "the end",
+    "thanks",
+    "so",
+    "okay",
+})
+
+_PUNCT_TABLE = str.maketrans("", "", ".,!?;:…\"'""''()[]{}")
+
+
+def _is_hallucination(text: str) -> bool:
+    """Return True if *text* matches a known Whisper hallucination phrase."""
+    normalized = text.translate(_PUNCT_TABLE).strip().lower()
+    return normalized in _HALLUCINATION_PHRASES
+
 
 def load_whisper_model(
     model_dir: str | Path,
@@ -85,7 +108,11 @@ def transcribe_pcm(
     )
     if not text:
         return ""
-    return " ".join(text.replace("\r", " ").replace("\n", " ").split())
+    text = " ".join(text.replace("\r", " ").replace("\n", " ").split())
+    if _is_hallucination(text):
+        logger.info("suppressed hallucination: %r", text)
+        return ""
+    return text
 
 
 @dataclass
