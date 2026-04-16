@@ -16,10 +16,26 @@ VAD_QUEUE_POLL_TIMEOUT_S = 0.15
 AUDIO_QUEUE_MAXSIZE = 512    # ~15s of 30ms blocks at 16kHz
 UTTERANCE_QUEUE_MAXSIZE = 64  # max in-flight utterances
 
-# Whisper models hallucinate these phrases on ambient noise / silence.
-# Comparison is case-insensitive with punctuation and extra whitespace
-# collapsed.  Filtered unconditionally — ambient mic noise produces RMS
-# well above any useful energy gate, so RMS-gating is ineffective.
+# Whisper models hallucinate these short phrases when the microphone
+# captures ambient noise but no speech.  The filter is intentionally
+# unconditional (no RMS or energy-level gate).
+#
+# Why not gate on audio energy?
+#   The VAD only commits utterances whose per-block RMS already exceeds
+#   energy_threshold (default 1500).  Ambient mic noise in a typical room
+#   produces avg_rms of 2000-4000 even during "silence", so every
+#   committed utterance — including hallucinated ones — arrives with RMS
+#   well above any useful suppression ceiling.  An RMS gate would simply
+#   never fire.  (PR #9 tried and reverted this approach after daemon
+#   logs confirmed the filter was unreachable.)
+#
+# Why is unconditional filtering safe?
+#   The check only matches when the *entire* transcript is one of these
+#   phrases.  A sentence containing "thank you" (e.g. "Thank you for
+#   your help") passes through untouched.  The only false-positive risk
+#   is a user dictating a standalone "okay" or "bye" — rare enough that
+#   re-dictating is far less disruptive than phantom text appearing on
+#   every silence gap.
 HALLUCINATION_PHRASES: frozenset[str] = frozenset({
     "thank you",
     "thanks for watching",
@@ -46,9 +62,8 @@ def postprocess_transcript(text: str) -> str:
     """Normalize whitespace and suppress known Whisper hallucination phrases.
 
     Both backends should call this on raw transcript text before returning
-    it to the daemon.  Hallucination phrases are filtered unconditionally
-    because ambient microphone noise typically produces RMS well above any
-    useful energy threshold, making RMS-gating ineffective.
+    it to the daemon.  See the module-level comment above
+    ``HALLUCINATION_PHRASES`` for why filtering is unconditional.
     """
     if not text:
         return ""

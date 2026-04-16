@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.8.3 — 2026-04-16
+
+### Fixed
+
+- **Suppress Whisper hallucination phrases.** Whisper models hallucinate
+  short phrases like "Thank you", "you", "Bye", and "Okay" when the
+  microphone captures ambient noise but no speech. Add a post-transcription
+  filter that suppresses known hallucination phrases when they are the
+  entire transcript output. Filtering is unconditional — RMS-gating was
+  tried and reverted because ambient mic noise produces RMS well above any
+  useful suppression ceiling (PR #9).
+- **Fix 3 pre-existing test failures.** Update `test_install` regex to
+  match current error messages; update `test_daemon` to patch the functions
+  `main()` actually calls after the GPU backend refactor.
+
 ## 0.8.2 — 2026-04-12
 
 ### Fixed
