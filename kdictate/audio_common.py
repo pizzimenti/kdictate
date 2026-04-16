@@ -16,11 +16,10 @@ VAD_QUEUE_POLL_TIMEOUT_S = 0.15
 AUDIO_QUEUE_MAXSIZE = 512    # ~15s of 30ms blocks at 16kHz
 UTTERANCE_QUEUE_MAXSIZE = 64  # max in-flight utterances
 
-# Whisper models hallucinate these phrases on silence or near-silence.
+# Whisper models hallucinate these phrases on ambient noise / silence.
 # Comparison is case-insensitive with punctuation and extra whitespace
-# collapsed.  The filter only fires when the utterance average RMS is
-# below the configured VAD energy threshold so that legitimate short
-# utterances ("okay", "bye") are not suppressed.
+# collapsed.  Filtered unconditionally — ambient mic noise produces RMS
+# well above any useful energy gate, so RMS-gating is ineffective.
 HALLUCINATION_PHRASES: frozenset[str] = frozenset({
     "thank you",
     "thanks for watching",
@@ -43,32 +42,20 @@ def is_hallucination(text: str) -> bool:
     return normalized in HALLUCINATION_PHRASES
 
 
-def postprocess_transcript(
-    text: str,
-    pcm_chunks: list[Any],
-    energy_threshold: float = 1500.0,
-) -> str:
-    """Normalize whitespace and suppress hallucinations on near-silent audio.
+def postprocess_transcript(text: str) -> str:
+    """Normalize whitespace and suppress known Whisper hallucination phrases.
 
     Both backends should call this on raw transcript text before returning
-    it to the daemon.  *energy_threshold* should match the configured VAD
-    energy threshold so the suppression ceiling tracks user settings.
+    it to the daemon.  Hallucination phrases are filtered unconditionally
+    because ambient microphone noise typically produces RMS well above any
+    useful energy threshold, making RMS-gating ineffective.
     """
-    import numpy as np
-
     if not text:
         return ""
     text = " ".join(text.replace("\r", " ").replace("\n", " ").split())
-    if is_hallucination(text) and pcm_chunks:
-        samples = np.concatenate(pcm_chunks)
-        if samples.size == 0:
-            return text
-        avg_rms = float(np.sqrt(np.mean(samples.astype(np.float32) ** 2)))
-        if avg_rms < energy_threshold:
-            logger.info(
-                "suppressed hallucination: %r (avg_rms=%.0f)", text, avg_rms,
-            )
-            return ""
+    if is_hallucination(text):
+        logger.info("suppressed hallucination: %r", text)
+        return ""
     return text
 
 
@@ -106,7 +93,6 @@ def transcribe_pcm(
     no_speech_threshold: float = 0.6,
     condition_on_previous_text: bool = False,
     vad_filter: bool = True,
-    energy_threshold: float = 1500.0,
 ) -> str:
     """Transcribe a list of int16 PCM chunks and return normalized text."""
     import numpy as np
@@ -141,7 +127,7 @@ def transcribe_pcm(
     )
     if not text:
         return ""
-    return postprocess_transcript(text, pcm_chunks, energy_threshold=energy_threshold)
+    return postprocess_transcript(text)
 
 
 @dataclass

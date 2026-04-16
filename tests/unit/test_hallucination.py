@@ -4,15 +4,10 @@ from __future__ import annotations
 
 import unittest
 
-import numpy as np
-
 from kdictate.audio_common import (
     is_hallucination,
     postprocess_transcript,
 )
-
-# Default energy threshold used for tests (matches daemon_profiles default).
-_ENERGY_THRESHOLD = 1500.0
 
 
 class IsHallucinationTest(unittest.TestCase):
@@ -51,50 +46,26 @@ class IsHallucinationTest(unittest.TestCase):
 
 
 class PostprocessTranscriptTest(unittest.TestCase):
-    def _silent_chunks(self) -> list[np.ndarray]:
-        """PCM chunks with avg RMS well below the default threshold."""
-        return [np.zeros(1600, dtype=np.int16)]
+    def test_suppresses_hallucination(self) -> None:
+        self.assertEqual(postprocess_transcript("Thank you."), "")
 
-    def _loud_chunks(self) -> list[np.ndarray]:
-        """PCM chunks with avg RMS well above the default threshold."""
-        samples = np.full(1600, _ENERGY_THRESHOLD * 3, dtype=np.int16)
-        return [samples]
-
-    def test_suppresses_hallucination_on_silence(self) -> None:
-        self.assertEqual(postprocess_transcript("Thank you.", self._silent_chunks()), "")
-
-    def test_allows_hallucination_phrase_on_loud_audio(self) -> None:
-        self.assertEqual(
-            postprocess_transcript("Thank you.", self._loud_chunks()),
-            "Thank you.",
-        )
+    def test_suppresses_all_phrases(self) -> None:
+        for phrase in ("you", "Bye.", "Okay!", "So", "Thanks"):
+            with self.subTest(phrase=phrase):
+                self.assertEqual(postprocess_transcript(phrase), "")
 
     def test_normalizes_whitespace(self) -> None:
-        self.assertEqual(
-            postprocess_transcript("  hello\n world  ", self._loud_chunks()),
-            "hello world",
-        )
+        self.assertEqual(postprocess_transcript("  hello\n world  "), "hello world")
 
     def test_empty_input(self) -> None:
-        self.assertEqual(postprocess_transcript("", self._loud_chunks()), "")
+        self.assertEqual(postprocess_transcript(""), "")
 
     def test_real_sentence_passes(self) -> None:
         text = "Please send the report"
-        self.assertEqual(postprocess_transcript(text, self._silent_chunks()), text)
+        self.assertEqual(postprocess_transcript(text), text)
 
-    def test_empty_pcm_arrays_do_not_suppress(self) -> None:
-        """Zero-length arrays in pcm_chunks must not produce NaN or crash."""
-        chunks = [np.array([], dtype=np.int16)]
-        self.assertEqual(postprocess_transcript("Thank you.", chunks), "Thank you.")
-
-    def test_custom_energy_threshold(self) -> None:
-        """Hallucination filter respects a caller-supplied threshold."""
-        # Chunks with RMS ~500: below default 1500 but above a low threshold.
-        chunks = [np.full(1600, 500, dtype=np.int16)]
-        # Suppressed at default threshold
-        self.assertEqual(postprocess_transcript("okay", chunks), "")
-        # Allowed when threshold is lowered below the RMS
+    def test_sentence_containing_hallucination_phrase_passes(self) -> None:
         self.assertEqual(
-            postprocess_transcript("okay", chunks, energy_threshold=200.0),
-            "okay",
+            postprocess_transcript("Thank you for your help"),
+            "Thank you for your help",
         )
