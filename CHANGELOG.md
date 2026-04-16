@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.10.1 — 2026-04-16
+
+### Fixed
+
+- **Respect in-flight cancellation before mutating mic volume.** If a
+  stop request arrived while the activation path was still validating
+  the default input device, the daemon would still run
+  `pactl set-source-volume @DEFAULT_SOURCE@ 91%` before noticing the
+  cancellation — changing the user's system mic gain for a session
+  that was about to abort. Moved the pactl call to immediately after
+  the cancellation gate.
+
 ## 0.10.0 — 2026-04-16
 
 ### Fixed
