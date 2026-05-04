@@ -30,6 +30,8 @@ class DictationConfig:
     min_speech_ms: int
     start_speech_ms: int
     max_utterance_s: float
+    session_max_recording_s: float
+    session_confirm_timeout_s: float
     backend: str
     runtime_paths: RuntimePaths
 
@@ -57,6 +59,8 @@ class DictationConfig:
             min_speech_ms=namespace.min_speech_ms,
             start_speech_ms=namespace.start_speech_ms,
             max_utterance_s=namespace.max_utterance_s,
+            session_max_recording_s=namespace.session_max_recording_s,
+            session_confirm_timeout_s=namespace.session_confirm_timeout_s,
             backend=namespace.backend,
             runtime_paths=runtime_paths,
         )
@@ -159,6 +163,25 @@ def build_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=defaults["max_utterance_s"],
         help="Force-commit an utterance when it reaches this length.",
+    )
+    parser.add_argument(
+        "--session-max-recording-s",
+        type=float,
+        default=defaults["session_max_recording_s"],
+        help=(
+            "Prompt the user to continue after this many seconds of "
+            "continuous recording; auto-stop if no confirmation. "
+            "Set <=0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--session-confirm-timeout-s",
+        type=float,
+        default=defaults["session_confirm_timeout_s"],
+        help=(
+            "Seconds to wait for the user to click Continue on the "
+            "session-limit prompt before auto-stopping."
+        ),
     )
     return parser
 

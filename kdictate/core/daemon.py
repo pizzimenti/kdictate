@@ -109,6 +109,7 @@ class DictationDaemon:
         stream_factory: Callable[..., Any] | None = None,
         input_device_resolver: Callable[[], tuple[str, bool]] = resolve_default_input_device,
         notify_error_fn: Callable[[str, str], None] | None = None,
+        session_prompt_fn: Callable[[float], bool] | None = None,
     ) -> None:
         self.config = config
         self._backend = backend
@@ -120,6 +121,13 @@ class DictationDaemon:
         # Desktop-notification side-effect, injected so tests can replace
         # it with a no-op or a recorder. Default uses real notify-send.
         self._notify_error_fn = notify_error_fn or self._send_desktop_notification
+        # Interactive session-limit prompt: returns True when the user
+        # clicks Continue, False on timeout or dismissal. Tests inject
+        # a deterministic stand-in.
+        self._session_prompt_fn = session_prompt_fn or self._prompt_session_continuation
+        self._session_watchdog_lock = threading.Lock()
+        self._session_watchdog_timer: threading.Timer | None = None
+        self._session_prompt_thread: threading.Thread | None = None
         self._lock = threading.RLock()
         self._recording = False
         self._starting = False
@@ -185,6 +193,7 @@ class DictationDaemon:
                 # step is itself wrapped so a failure inside teardown can
                 # never prevent the recovery state transition below.
                 try:
+                    self._cancel_session_watchdog()
                     self._stop_vad.set()
                     self._cancel_start.set()
                     stream = self._handles.stream
@@ -283,6 +292,123 @@ class DictationDaemon:
             )
         except OSError:
             pass
+
+    def _arm_session_watchdog(self) -> None:
+        """Schedule the wall-clock prompt that asks the user to confirm a long session.
+
+        Cancels any prior timer so re-arming after a "Continue" press starts
+        a fresh interval. A non-positive ``session_max_recording_s`` disables
+        the watchdog entirely (useful for tests and for users who don't want it).
+        """
+
+        duration = self.config.session_max_recording_s
+        with self._session_watchdog_lock:
+            if self._session_watchdog_timer is not None:
+                self._session_watchdog_timer.cancel()
+                self._session_watchdog_timer = None
+            if duration <= 0:
+                return
+            timer = threading.Timer(duration, self._on_session_limit)
+            timer.name = "kdictate-session-watchdog"
+            timer.daemon = True
+            self._session_watchdog_timer = timer
+        timer.start()
+        self._logger.info("session watchdog armed for %.0fs", duration)
+
+    def _cancel_session_watchdog(self) -> None:
+        """Cancel any pending session-limit timer."""
+
+        with self._session_watchdog_lock:
+            timer = self._session_watchdog_timer
+            self._session_watchdog_timer = None
+        if timer is not None:
+            timer.cancel()
+
+    def _on_session_limit(self) -> None:
+        """Wall-clock fired: prompt the user, auto-stop on no-response."""
+
+        with self._lock:
+            if self._state != STATE_RECORDING:
+                # User toggled off at the same instant the timer fired.
+                return
+        self._logger.info(
+            "session limit reached after %.0fs; prompting user",
+            self.config.session_max_recording_s,
+        )
+
+        def _run() -> None:
+            try:
+                continued = bool(
+                    self._session_prompt_fn(self.config.session_confirm_timeout_s)
+                )
+            except Exception:  # noqa: BLE001
+                self._logger.exception("session prompt failed; auto-stopping")
+                continued = False
+            with self._lock:
+                still_recording = self._state == STATE_RECORDING
+            if not still_recording:
+                # User toggled off during the prompt window — nothing to do.
+                self._logger.info("session prompt resolved after toggle-off")
+                return
+            if continued:
+                self._logger.info("session continued by user")
+                self._arm_session_watchdog()
+            else:
+                self._logger.info("session auto-stopped (no confirmation)")
+                self.request_stop()
+
+        thread = threading.Thread(
+            target=_run,
+            name="kdictate-session-prompt",
+            daemon=True,
+        )
+        self._session_prompt_thread = thread
+        thread.start()
+
+    def _prompt_session_continuation(self, timeout_s: float) -> bool:
+        """Default notify-send shell-out for the session-limit confirmation.
+
+        Returns True iff the user clicked the Continue action within
+        ``timeout_s`` seconds. Returns False on timeout, dismissal, or
+        when notify-send is unavailable.
+        """
+
+        notify_send = shutil.which("notify-send")
+        if notify_send is None:
+            self._logger.warning(
+                "notify-send not on PATH; cannot prompt for session continuation"
+            )
+            return False
+        expire_ms = max(1, int(timeout_s * 1000))
+        try:
+            proc = subprocess.Popen(
+                [
+                    notify_send,
+                    "--app-name=KDictate",
+                    "--icon=audio-input-microphone",
+                    "--urgency=critical",
+                    f"--expire-time={expire_ms}",
+                    "--action=continue=Continue",
+                    "--wait",
+                    "KDictate still recording",
+                    f"Stopping in {int(timeout_s)}s — click Continue to keep going.",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+            )
+        except OSError:
+            self._logger.exception("failed to spawn notify-send for session prompt")
+            return False
+        try:
+            stdout, _ = proc.communicate(timeout=timeout_s + 2.0)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.communicate(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                pass
+            return False
+        return stdout.strip() == b"continue"
 
     def _reset_session_buffers(self) -> None:
         """Clear transient queues and accumulated transcript fragments."""
@@ -642,6 +768,7 @@ class DictationDaemon:
             write_last_text(self.runtime_paths.last_text_file, "")
             self._write_state(STATE_RECORDING)
             self._logger.info("recording started on %s", mic_name)
+            self._arm_session_watchdog()
         except Exception as exc:  # noqa: BLE001
             self._logger.exception("recording start failed")
             self._emit_error("recording_start_failed", str(exc))
@@ -656,6 +783,8 @@ class DictationDaemon:
 
     def _run_stop_session(self) -> None:
         """Stop capture, flush decode workers, and publish the final transcript."""
+
+        self._cancel_session_watchdog()
 
         with self._lock:
             if self._starting and not self._recording:
@@ -834,6 +963,7 @@ class DictationDaemon:
         # the shutdown teardown and potentially reopening the stream.
         self._shutting_down.set()
 
+        self._cancel_session_watchdog()
         self._pending_start.clear()
         self._cancel_start.set()
         self._stop_vad.set()

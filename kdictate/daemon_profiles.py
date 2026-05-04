@@ -25,4 +25,6 @@ def daemon_arg_defaults() -> dict[str, object]:
         "min_speech_ms": 180,
         "start_speech_ms": 150,
         "max_utterance_s": 10.0,
+        "session_max_recording_s": 30.0,
+        "session_confirm_timeout_s": 10.0,
     }

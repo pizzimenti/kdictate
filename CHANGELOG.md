@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.10.1 — 2026-05-04
+
+### Added
+
+- **Session watchdog with continue prompt.** After 30 seconds of
+  continuous recording the daemon fires a critical-urgency desktop
+  notification with a Continue action button. Clicking Continue
+  re-arms the watchdog for another 30 seconds. Letting the
+  notification time out (10s default) auto-stops dictation through
+  the normal toggle-off path so the accumulated transcript is still
+  committed. This guards against the failure mode where dictation is
+  left on for hours, accumulating tens of thousands of characters in
+  one `FinalTranscript` D-Bus signal — that single oversized commit
+  is what wedged IBus' input context for an entire session recently
+  (a 7h46m run from 14:16 to 22:02 produced a 37,810-char final
+  transcript that broke the input context for the next day).
+  New CLI flags `--session-max-recording-s` (default 30) and
+  `--session-confirm-timeout-s` (default 10) tune both windows;
+  setting `--session-max-recording-s=0` disables the watchdog.
+
 ## 0.10.0 — 2026-04-16
 
 ### Fixed
