@@ -231,15 +231,26 @@ if _issues:
     for issue in _issues:
         print(f"    • {issue}")
     print()
-    print("  Hot-start IBus for the current session (no logout needed):")
-    print("    qdbus6 org.kde.KWin /KWin reconfigure && \\")
-    print("      pkill -x ibus-daemon; sleep 0.5 && \\")
-    print("      qdbus6 --literal org.kde.KWin /VirtualKeyboard \\")
-    print("        org.freedesktop.DBus.Properties.Set \\")
-    print("        org.kde.kwin.VirtualKeyboard enabled false && sleep 0.5 && \\")
-    print("      qdbus6 --literal org.kde.KWin /VirtualKeyboard \\")
-    print("        org.freedesktop.DBus.Properties.Set \\")
-    print("        org.kde.kwin.VirtualKeyboard enabled true")
+    qdbus_bin = next(
+        (b for b in ("qdbus6", "qdbus") if shutil.which(b) is not None),
+        None,
+    )
+    if qdbus_bin is None:
+        print(
+            "  Hot-start needs qdbus6 (or qdbus) on PATH, but neither was found.\n"
+            "  Install one and re-run, or log out and back in to apply the new\n"
+            "  InputMethod setting."
+        )
+    else:
+        print("  Hot-start IBus for the current session (no logout needed):")
+        print(f"    {qdbus_bin} org.kde.KWin /KWin reconfigure && \\")
+        print("      pkill -x ibus-daemon; sleep 0.5 && \\")
+        print(f"      {qdbus_bin} --literal org.kde.KWin /VirtualKeyboard \\")
+        print("        org.freedesktop.DBus.Properties.Set \\")
+        print("        org.kde.kwin.VirtualKeyboard enabled false && sleep 0.5 && \\")
+        print(f"      {qdbus_bin} --literal org.kde.KWin /VirtualKeyboard \\")
+        print("        org.freedesktop.DBus.Properties.Set \\")
+        print("        org.kde.kwin.VirtualKeyboard enabled true")
     sys.exit(1)
 else:
     print("  \033[32mAll checks passed.\033[0m")
