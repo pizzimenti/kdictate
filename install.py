@@ -445,9 +445,15 @@ def refresh_ibus_registry(ctx: InstallContext) -> None:
         if shutil.which(candidate) is not None:
             qdbus_bin = candidate
             break
-    if qdbus_bin is not None:
-        run_command([qdbus_bin, "org.kde.KWin", "/KWin", "reconfigure"],
-                    quiet=True, check=False)
+    if qdbus_bin is None:
+        # Without qdbus6/qdbus we have no recovery path: killing the daemon
+        # below would leave the user with a broken IM stack and no way to
+        # bring it back without logout.  Skip the hot-start entirely; the
+        # next session login picks up the new InputMethod desktop file.
+        return
+
+    run_command([qdbus_bin, "org.kde.KWin", "/KWin", "reconfigure"],
+                quiet=True, check=False)
 
     # Kill any stale ibus-daemon so the toggle below has a clean slate.  KWin
     # only spawns ibus-ui-gtk3 --enable-wayland-im on a true cold-start of the
@@ -464,15 +470,14 @@ def refresh_ibus_registry(ctx: InstallContext) -> None:
     # Empirically, "ibus restart" does NOT trigger this — it re-execs the
     # daemon in place with the same args, so KWin sees no D-Bus name change
     # and the bridge is never launched.
-    if qdbus_bin is not None:
-        for value in ("false", "true"):
-            run_command(
-                [qdbus_bin, "--literal", "org.kde.KWin", "/VirtualKeyboard",
-                 "org.freedesktop.DBus.Properties.Set",
-                 "org.kde.kwin.VirtualKeyboard", "enabled", value],
-                quiet=True, check=False,
-            )
-            time.sleep(0.5)
+    for value in ("false", "true"):
+        run_command(
+            [qdbus_bin, "--literal", "org.kde.KWin", "/VirtualKeyboard",
+             "org.freedesktop.DBus.Properties.Set",
+             "org.kde.kwin.VirtualKeyboard", "enabled", value],
+            quiet=True, check=False,
+        )
+        time.sleep(0.5)
 
 
 def reload_systemd_user(ctx: InstallContext) -> None:

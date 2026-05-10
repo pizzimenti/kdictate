@@ -5,14 +5,22 @@
 ### Fixed
 
 - **IBus hot-start broken on fresh KDE Plasma Wayland install.** The
-  previous `gdbus VirtualKeyboard.enabled` toggle was a no-op: KWin had a
-  null `InputMethod` in memory because `kwriteconfig6` writes to disk but
-  KWin does not re-read `kwinrc` during a live session. Replaced with a
-  three-step sequence: `qdbus reconfigure` (makes KWin pick up the new
-  `InputMethod` key), `ibus-daemon -r -d` (bootstraps a registered
-  process), `ibus restart` (KWin detects the daemon death and re-launches
-  via `ibus-ui-gtk3 --enable-wayland-im` with the correct Wayland socket,
-  setting `VirtualKeyboard.available=true`).
+  previous `gdbus VirtualKeyboard.enabled` toggle was a no-op when run
+  immediately after install: KWin had a null `InputMethod` in memory
+  because `kwriteconfig6` writes to disk but KWin does not re-read
+  `kwinrc` during a live session. Replaced with a three-step sequence
+  via `qdbus6` (fallback `qdbus`): `org.kde.KWin /KWin reconfigure`
+  (makes KWin pick up the new `InputMethod` key), `pkill -x ibus-daemon`
+  (clears any stale daemon that would no-op the next signal), and an
+  `org.kde.kwin.VirtualKeyboard.enabled` false→true toggle via
+  `Properties.Set` (causes KWin to launch the `InputMethod` desktop
+  file, which spawns `ibus-ui-gtk3 --enable-wayland-im` with the
+  correct Wayland socket, setting `VirtualKeyboard.available=true`).
+  `ibus restart` does not work for this — it re-execs the daemon in
+  place with the same args, so KWin sees no D-Bus name change and the
+  Wayland IM bridge is never launched. If neither `qdbus6` nor `qdbus`
+  is on `PATH`, the installer skips the hot-start (no recovery path
+  available); the new InputMethod takes effect at the next login.
 - **`troubleshoot.py` false negative on `InputMethod[$e]=` form.** KDE
   KConfig may write the key as `InputMethod=` or `InputMethod[$e]=` (the
   latter signals env-var expansion at read time). The diagnostic check
