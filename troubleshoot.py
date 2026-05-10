@@ -244,7 +244,10 @@ if _issues:
     else:
         print("  Hot-start IBus for the current session (no logout needed):")
         print(f"    {qdbus_bin} org.kde.KWin /KWin reconfigure && \\")
-        print("      pkill -x ibus-daemon; sleep 0.5 && \\")
+        # `pkill -x` returns non-zero when no process matched, which is fine
+        # here — `|| true` keeps the `&&` chain alive so `reconfigure` failure
+        # still short-circuits everything that follows.
+        print("      { pkill -x ibus-daemon || true; } && sleep 0.5 && \\")
         print(f"      {qdbus_bin} --literal org.kde.KWin /VirtualKeyboard \\")
         print("        org.freedesktop.DBus.Properties.Set \\")
         print("        org.kde.kwin.VirtualKeyboard enabled false && sleep 0.5 && \\")

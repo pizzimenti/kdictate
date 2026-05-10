@@ -452,8 +452,16 @@ def refresh_ibus_registry(ctx: InstallContext) -> None:
         # next session login picks up the new InputMethod desktop file.
         return
 
-    run_command([qdbus_bin, "org.kde.KWin", "/KWin", "reconfigure"],
-                quiet=True, check=False)
+    # KWin must be reachable on the session bus for the toggle below to do
+    # anything useful.  If reconfigure fails (non-KDE session, transient D-Bus
+    # failure, etc.), there's no point killing the daemon — the toggle won't
+    # recover it either, and we'd leave the user worse off than we found them.
+    reconfigure = run_command(
+        [qdbus_bin, "org.kde.KWin", "/KWin", "reconfigure"],
+        quiet=True, check=False,
+    )
+    if reconfigure.returncode != 0:
+        return
 
     # Kill any stale ibus-daemon so the toggle below has a clean slate.  KWin
     # only spawns ibus-ui-gtk3 --enable-wayland-im on a true cold-start of the
