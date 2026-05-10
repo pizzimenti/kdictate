@@ -26,7 +26,8 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, NoReturn
+from collections.abc import Iterable
+from typing import Final, Mapping, NoReturn
 
 from kdictate import __version__
 from kdictate.app_metadata import (
@@ -226,12 +227,13 @@ def run_command(
     command: list[str | Path], *,
     env: Mapping[str, str] | None = None,
     quiet: bool = False, check: bool = True,
+    timeout: float | None = None,
 ) -> subprocess.CompletedProcess[str]:
     args = [str(p) for p in command]
     proc_env = {**os.environ, **(env or {})}
     return subprocess.run(
         args, check=check, encoding="utf-8", errors="replace",
-        capture_output=quiet, env=proc_env,
+        capture_output=quiet, env=proc_env, timeout=timeout,
     )
 
 
@@ -291,14 +293,37 @@ def install_python_environment(ctx: InstallContext) -> None:
     run_command([ctx.pip_bin, "install", "--no-deps", "-e", ctx.runtime_dir], quiet=True)
 
 
+_CPU_MODEL_REQUIRED_FILES: Final[tuple[str, ...]] = (
+    "model.bin", "config.json", "tokenizer.json",
+    "vocabulary.json", "preprocessor_config.json",
+)
+
+
+def _model_files_present(model_dir: Path, required: Iterable[str]) -> bool:
+    """Return True iff every required file exists with non-zero size."""
+    for name in required:
+        path = model_dir / name
+        if not path.is_file() or path.stat().st_size == 0:
+            return False
+    return True
+
+
 def download_cpu_model(ctx: InstallContext) -> None:
     """Download the CTranslate2 model with a single clean progress bar.
 
-    Uses ``local_dir_use_symlinks=False`` so files are written directly
-    (no symlink farm), and ``max_workers=1`` so tqdm shows one bar at a
-    time instead of overlapping parallel fetches.
+    Skips the network call entirely if the model is already on disk.
+    snapshot_download otherwise issues a HEAD/etag request for every file
+    even when nothing needs to download, and a single hung request to
+    huggingface.co (silent connection drop) blocks the install indefinitely.
+    To force a re-download, delete the model directory.
+
+    Uses ``max_workers=1`` so tqdm shows one bar at a time instead of
+    overlapping parallel fetches.
     """
     model_dir = ctx.runtime_dir / DEFAULT_MODEL_NAME
+    if _model_files_present(model_dir, _CPU_MODEL_REQUIRED_FILES):
+        print(f"  (model already present at {model_dir}, skipping download)")
+        return
     subprocess.run([
         str(ctx.python_bin), "-u", "-c",
         f"from huggingface_hub import snapshot_download; "
@@ -309,8 +334,15 @@ def download_cpu_model(ctx: InstallContext) -> None:
 
 
 def download_gpu_model(ctx: InstallContext) -> None:
-    """Download the GGML Q8_0 model (single file, single progress bar)."""
+    """Download the GGML Q8_0 model (single file, single progress bar).
+
+    Skips the download if the file is already on disk — see
+    ``download_cpu_model`` for why this matters.
+    """
     GGML_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if GGML_MODEL_PATH.is_file() and GGML_MODEL_PATH.stat().st_size > 0:
+        print(f"  (model already present at {GGML_MODEL_PATH}, skipping download)")
+        return
     subprocess.run([
         str(ctx.python_bin), "-u", "-c",
         f"from huggingface_hub import hf_hub_download; "
@@ -406,30 +438,41 @@ def refresh_ibus_registry(ctx: InstallContext) -> None:
 
     # Tell KWin to re-read kwinrc so it picks up the InputMethod key written
     # by configure_kwin_input_method in the same install run.  Without this,
-    # KWin still has a null InputMethod in memory and any subsequent restart
-    # attempt does nothing.
-    for qdbus in ("qdbus6", "qdbus"):
-        if shutil.which(qdbus) is not None:
-            run_command([qdbus, "org.kde.KWin", "/KWin", "reconfigure"],
-                        quiet=True, check=False)
+    # KWin still has a null InputMethod in memory and the toggle below does
+    # nothing because there's no input method desktop file to launch.
+    qdbus_bin: str | None = None
+    for candidate in ("qdbus6", "qdbus"):
+        if shutil.which(candidate) is not None:
+            qdbus_bin = candidate
             break
+    if qdbus_bin is not None:
+        run_command([qdbus_bin, "org.kde.KWin", "/KWin", "reconfigure"],
+                    quiet=True, check=False)
 
-    # Bootstrap ibus-daemon so a registered process exists on the session bus.
-    # -r replaces any stale instance; -d daemonises so this call returns
-    # immediately.  We disable the panel here because KWin will re-launch the
-    # full ibus-ui-gtk3 --enable-wayland-im stack in the next step.
-    run_command(["ibus-daemon", "-r", "-d", "--panel", "disable"],
-                quiet=True, check=False)
-    time.sleep(1)
+    # Kill any stale ibus-daemon so the toggle below has a clean slate.  KWin
+    # only spawns ibus-ui-gtk3 --enable-wayland-im on a true cold-start of the
+    # input method; if a daemon is already registered on the session bus
+    # (especially one started with --panel disable), the toggle no-ops and we
+    # end up with a daemon but no Wayland IM bridge.
+    run_command(["pkill", "-x", "ibus-daemon"], quiet=True, check=False)
+    time.sleep(0.5)
 
-    # "ibus restart" sends Exit() to the running daemon, then KWin detects the
-    # process death and re-launches it via the InputMethod desktop file:
+    # Toggle KWin's VirtualKeyboard.enabled from false to true.  This is the
+    # signal that makes KWin invoke the InputMethod desktop file:
     #   ibus-ui-gtk3 --enable-wayland-im --exec-daemon …
-    # That re-launch registers the input method with the Wayland compositor and
-    # sets VirtualKeyboard.available=true.  The gdbus toggle alone cannot do
-    # this: it can only restart something already running via the Wayland IM
-    # protocol; it cannot cold-start the initial process.
-    run_command(["ibus", "restart"], quiet=True, check=False)
+    # which spawns both the daemon and the Wayland IM bridge in one shot.
+    # Empirically, "ibus restart" does NOT trigger this — it re-execs the
+    # daemon in place with the same args, so KWin sees no D-Bus name change
+    # and the bridge is never launched.
+    if qdbus_bin is not None:
+        for value in ("false", "true"):
+            run_command(
+                [qdbus_bin, "--literal", "org.kde.KWin", "/VirtualKeyboard",
+                 "org.freedesktop.DBus.Properties.Set",
+                 "org.kde.kwin.VirtualKeyboard", "enabled", value],
+                quiet=True, check=False,
+            )
+            time.sleep(0.5)
 
 
 def reload_systemd_user(ctx: InstallContext) -> None:
