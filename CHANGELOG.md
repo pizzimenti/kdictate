@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 — 2026-05-10
 
 ### Fixed
 
@@ -18,26 +18,77 @@
   correct Wayland socket, setting `VirtualKeyboard.available=true`).
   `ibus restart` does not work for this — it re-execs the daemon in
   place with the same args, so KWin sees no D-Bus name change and the
-  Wayland IM bridge is never launched. If neither `qdbus6` nor `qdbus`
-  is on `PATH`, the installer skips the hot-start (no recovery path
-  available); the new InputMethod takes effect at the next login.
+  Wayland IM bridge is never launched. Skips the hot-start cleanly
+  when `qdbus6`/`qdbus` or `pkill` are unavailable, or when
+  `reconfigure` returns non-zero, instead of leaving the user with a
+  broken IM stack and no recovery; if either toggle call fails after
+  the daemon kill, falls back to `ibus-daemon -r -d` so at least basic
+  IBus is running until next login.
+- **Installer could hang indefinitely on a healthy model cache.**
+  `snapshot_download` ran unconditionally, issuing HEAD/etag requests
+  for every file even when nothing needed downloading. A single hung
+  request to huggingface.co (silent connection drop) blocked the
+  install at step 3 with no progress and no recovery. Added a pre-check
+  that uses per-file minimum sizes (model.bin ≥ 1.5 GB, tokenizer.json
+  ≥ 2 MB, vocabulary.json ≥ 500 kB, configs ≥ 100 B) — skips the
+  network call when the cache is healthy and re-downloads when a file
+  is truncated. Same per-file size protection added to the GGML GPU
+  model path. To force a re-download, delete the model directory.
 - **`troubleshoot.py` false negative on `InputMethod[$e]=` form.** KDE
   KConfig may write the key as `InputMethod=` or `InputMethod[$e]=` (the
   latter signals env-var expansion at read time). The diagnostic check
   now matches both forms; previously the `[$e]=` variant was reported as
   a config error on systems where it was actually correct.
+- **`troubleshoot.py` false-green when `pactl` cannot reach the audio
+  server.** The audio-device check now gates on `pactl get-default-source`'s
+  return code; previously it only inspected stdout and reported PASS
+  when stdout was empty because `pactl` failed to contact PulseAudio/
+  PipeWire.
 
 ### Added
 
-- `troubleshoot.py`: diagnostic script that checks every layer of the
-  stack (system binaries, installed files, `environment.d` contents,
+- **`troubleshoot.py`**: diagnostic script that checks every layer of
+  the stack (system binaries, installed files, `environment.d` contents,
   `kwinrc` settings, live KWin D-Bus state, IBus processes and engine
   registration, systemd service, D-Bus ping, audio input device) and
-  prints a one-liner fix if anything is misconfigured.
-- `docs/architecture-ibus.md`: documents the KDE Plasma Wayland IBus
-  startup lifecycle, the compositor socket restriction that prevents
-  manual `ibus-ui-gtk3 --enable-wayland-im` invocation, and the working
-  hot-start sequence with rationale.
+  prints a one-liner recovery command (derived from the same `qdbus6`/
+  `qdbus` detection logic the installer uses) if anything is
+  misconfigured.
+- **`docs/architecture-ibus.md`**: documents the KDE Plasma Wayland
+  IBus startup lifecycle, the compositor socket restriction that
+  prevents manual `ibus-ui-gtk3 --enable-wayland-im` invocation, what
+  does NOT work for hot-start (and why), and the working sequence with
+  rationale.
+- **VAD per-session config dump and end-of-session summary**: at
+  recording start the daemon now logs `vad config:
+  energy_threshold=… start_speech_blocks=… min_speech_blocks=…
+  silence_blocks=… sample_rate=… block_ms=…`, and at recording end
+  logs a one-line summary `recording ended: …s, … blocks, … voiced
+  (>=…), … committed, peak_rms=…, peak_below_thresh=…`. Makes silent
+  recordings diagnosable from the log alone — peak_rms vs.
+  energy_threshold tells you whether the mic gain is the issue,
+  voiced_blocks vs. commits tells you whether VAD heuristics rejected
+  real speech.
+
+### Changed
+
+- **VAD defaults loosened** to accept conversational-volume speech.
+  The previous values (raised in 0.8.x to fight Whisper hallucinations
+  on ambient noise) were rejecting natural utterances on real
+  mic+voice combos; the unconditional `HALLUCINATION_PHRASES` filter
+  added in 0.9.x makes the over-tight gates redundant. New defaults:
+
+  | Setting | Before | After |
+  |---|---|---|
+  | `energy_threshold` | 1500 | 1000 |
+  | `silence_ms` | 300 | 600 |
+  | `min_speech_ms` | 180 | 120 |
+  | `start_speech_ms` | 150 | 90 |
+  | decode-skip gate | < 0.5s | < 0.3s |
+
+  `VADConfig` in `audio_common.py` and `daemon_arg_defaults()` in
+  `daemon_profiles.py` are now in sync so direct `VADConfig()`
+  instantiations don't pick up stale defaults.
 
 ## 0.10.1 — 2026-05-04
 
