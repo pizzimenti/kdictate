@@ -201,23 +201,34 @@ except Exception as exc:  # noqa: BLE001
 section("Audio input device")
 try:
     result = _run("pactl", "get-default-source")
-    source = result.stdout.strip()
-    is_monitor = source.endswith(".monitor")
-    check("Default source is not a monitor", not is_monitor, f"(source={source!r})",
-          warn_only=is_monitor)
-    if source:
-        desc_result = _run("pactl", "list", "sources")
-        in_target = False
-        description = source
-        for line in desc_result.stdout.splitlines():
-            stripped = line.strip()
-            parts = stripped.split(None, 1)
-            if stripped.startswith("Name:") and len(parts) > 1 and parts[1] == source:
-                in_target = True
-            elif in_target and stripped.startswith("Description:"):
-                description = stripped.split(":", 1)[1].strip()
-                break
-        print(f"  [{_INFO}] Default source: {description}")
+    if result.returncode != 0:
+        # pactl ran but couldn't reach the PulseAudio/PipeWire server.  Without
+        # this gate, empty stdout below would let the .monitor check pass on
+        # what is actually a broken audio session — a false-green in a script
+        # whose whole job is detecting misconfiguration.
+        check(
+            "pactl get-default-source",
+            False,
+            f"(rc={result.returncode}, stderr={result.stderr.strip()!r})",
+        )
+    else:
+        source = result.stdout.strip()
+        is_monitor = source.endswith(".monitor")
+        check("Default source is not a monitor", not is_monitor,
+              f"(source={source!r})", warn_only=is_monitor)
+        if source:
+            desc_result = _run("pactl", "list", "sources")
+            in_target = False
+            description = source
+            for line in desc_result.stdout.splitlines():
+                stripped = line.strip()
+                parts = stripped.split(None, 1)
+                if stripped.startswith("Name:") and len(parts) > 1 and parts[1] == source:
+                    in_target = True
+                elif in_target and stripped.startswith("Description:"):
+                    description = stripped.split(":", 1)[1].strip()
+                    break
+            print(f"  [{_INFO}] Default source: {description}")
 except Exception as exc:  # noqa: BLE001
     check("pactl query", False, str(exc), warn_only=True)
 
