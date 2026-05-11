@@ -22,7 +22,7 @@ UTTERANCE_QUEUE_MAXSIZE = 64  # max in-flight utterances
 #
 # Why not gate on audio energy?
 #   The VAD only commits utterances whose per-block RMS already exceeds
-#   energy_threshold (default 1500).  Ambient mic noise in a typical room
+#   energy_threshold (default 1000).  Ambient mic noise in a typical room
 #   produces avg_rms of 2000-4000 even during "silence", so every
 #   committed utterance — including hallucinated ones — arrives with RMS
 #   well above any useful suppression ceiling.  An RMS gate would simply
@@ -151,10 +151,10 @@ class VADConfig:
 
     sample_rate: int = 16000
     block_ms: int = 30
-    energy_threshold: float = 1500.0
-    silence_ms: int = 300
-    min_speech_ms: int = 180
-    start_speech_ms: int = 150
+    energy_threshold: float = 1000.0
+    silence_ms: int = 600
+    min_speech_ms: int = 120
+    start_speech_ms: int = 90
     max_utterance_s: float = 10.0
 
     @property
@@ -207,6 +207,19 @@ class VADSegmenter:
         start_speech_blocks = cfg.start_speech_blocks
         max_utterance_blocks = cfg.max_utterance_blocks
 
+        logger.info(
+            "vad config: energy_threshold=%.0f, start_speech_blocks=%d, "
+            "min_speech_blocks=%d, silence_blocks=%d, sample_rate=%d, block_ms=%.0f",
+            cfg.energy_threshold, start_speech_blocks, min_speech_blocks,
+            silence_blocks, cfg.sample_rate, cfg.block_ms,
+        )
+        session_start = time.monotonic()
+        total_blocks = 0
+        voiced_blocks = 0
+        commits = 0
+        peak_rms_overall = 0.0
+        peak_rms_below_thresh = 0.0
+
         utterance_pcm: list[Any] = []
         pending_speech_pcm: list[Any] = []
         pending_silence_pcm: list[Any] = []
@@ -218,6 +231,7 @@ class VADSegmenter:
         def commit() -> None:
             nonlocal in_speech, speech_block_count, pending_speech_block_count
             nonlocal trailing_silence_count, utterance_pcm, pending_speech_pcm, pending_silence_pcm
+            nonlocal commits
             if speech_block_count >= min_speech_blocks and utterance_pcm:
                 audio_seconds = sum(len(c) for c in utterance_pcm) / float(cfg.sample_rate)
                 avg_rms = float(np.sqrt(np.mean(
@@ -226,6 +240,7 @@ class VADSegmenter:
                 pending = self.utterance_queue.qsize()
                 try:
                     self.utterance_queue.put_nowait((list(utterance_pcm), audio_seconds))
+                    commits += 1
                     logger.info(
                         "utterance committed: %.1fs audio, %d blocks, %d queued, avg_rms=%.0f",
                         audio_seconds, speech_block_count, pending, avg_rms,
@@ -249,6 +264,14 @@ class VADSegmenter:
 
                 rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
                 voiced = rms >= cfg.energy_threshold
+
+                total_blocks += 1
+                if rms > peak_rms_overall:
+                    peak_rms_overall = rms
+                if voiced:
+                    voiced_blocks += 1
+                elif rms > peak_rms_below_thresh:
+                    peak_rms_below_thresh = rms
 
                 if voiced:
                     if not in_speech:
@@ -289,6 +312,18 @@ class VADSegmenter:
             if in_speech and speech_block_count >= min_speech_blocks and utterance_pcm:
                 commit()
         finally:
+            # Single-line per-session summary so a silent recording is
+            # diagnosable from the log alone: peak_rms vs. energy_threshold
+            # tells you whether the mic gain is the issue, voiced_blocks vs.
+            # commits tells you whether VAD heuristics rejected real speech.
+            elapsed = time.monotonic() - session_start
+            logger.info(
+                "recording ended: %.1fs, %d blocks, %d voiced (>=%.0f), "
+                "%d committed, peak_rms=%.0f, peak_below_thresh=%.0f",
+                elapsed, total_blocks, voiced_blocks, cfg.energy_threshold,
+                commits, peak_rms_overall, peak_rms_below_thresh,
+            )
+
             # Always post the stop sentinel — even if the loop above raised
             # — so the decode consumer can never wedge waiting for a sentinel
             # that never arrives. A short timeout guards against the unlikely
