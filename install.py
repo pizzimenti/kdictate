@@ -26,8 +26,8 @@ import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Iterable
-from typing import Final, Mapping, NoReturn
+from collections.abc import Iterable, Mapping
+from typing import Final, NoReturn
 
 from kdictate import __version__
 from kdictate.app_metadata import (
@@ -357,7 +357,11 @@ def download_gpu_model(ctx: InstallContext) -> None:
     ``download_cpu_model`` for why this matters.
     """
     GGML_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if GGML_MODEL_PATH.is_file() and GGML_MODEL_PATH.stat().st_size > 0:
+    # Per-file minimum size, conservatively below the published ~834 MB.  The
+    # GGML Q8_0 large-v3-turbo file is single-blob; a partial download leaves a
+    # smaller-but-nonzero file that loads as a corrupted model at runtime.
+    # See download_cpu_model for the same pattern on the CT2 model.
+    if GGML_MODEL_PATH.is_file() and GGML_MODEL_PATH.stat().st_size >= 700_000_000:
         print(f"  (model already present at {GGML_MODEL_PATH}, skipping download)")
         return
     subprocess.run([
