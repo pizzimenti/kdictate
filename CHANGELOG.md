@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.11.1 — 2026-05-17
+
+### Fixed
+
+- **IBus engine silently drifting back to `xkb:us::eng` mid-session left
+  the daemon healthy but dictation dead.** Symptom: mic activates,
+  daemon records and emits `FinalTranscript`, but no text appears in the
+  focused field because no KDictate engine instance is subscribed (only
+  the layout engine is active). Observed on KDE Plasma Wayland after
+  IBus daemon restarts and input-method config reloads — the engine
+  remained preloaded but no longer the *active* one, and the v0.11.0
+  hot-start fix only covered the at-install case. The daemon now calls
+  `ibus engine io.github.pizzimenti.KDictate1` at the start of every
+  session (next to `set_default_source_volume`) and logs a single
+  warning when it had to heal. The `ibus engine <name>` set is observed
+  to occasionally exit non-zero on KDE/Wayland even when the switch
+  succeeds, so the helper re-reads the active engine to verify rather
+  than trusting the exit code. Best-effort: if `ibus` is missing or
+  unresponsive within 2s, the daemon still proceeds to record.
+
 ## 0.11.0 — 2026-05-10
 
 ### Fixed

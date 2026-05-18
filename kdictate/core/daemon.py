@@ -28,6 +28,7 @@ from kdictate.backend import TranscriptionBackend, create_cpu_backend
 from kdictate.config import DictationConfig, parse_args
 from kdictate.constants import STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_STARTING, STATE_TRANSCRIBING
 from kdictate.core.audio import resolve_default_input_device, set_default_source_volume
+from kdictate.core.ibus import ensure_active_engine
 from kdictate.exceptions import AudioInputError, ConfigurationError, TranscriptionError
 from kdictate.logging_utils import configure_logging, get_propagating_child
 from kdictate.runtime import RuntimePaths, write_last_text, write_state
@@ -701,9 +702,17 @@ class DictationDaemon:
         # doesn't mutate the user's system volume for no reason.
         set_default_source_volume()
 
-        # Re-check cancellation: set_default_source_volume() shells out to
-        # pactl and can take up to its 3s timeout. A stop arriving during
-        # that window should abort before we spin up VAD/decode threads.
+        # Ensure the kdictate IBus engine is active. On KDE/Wayland the
+        # active engine can silently revert to the keyboard layout, in
+        # which case the daemon would still record and emit FinalTranscript
+        # but no engine instance would be subscribed to commit text into
+        # the focused field.
+        ensure_active_engine()
+
+        # Re-check cancellation: set_default_source_volume() and
+        # ensure_active_engine() shell out to pactl/ibus and can each take
+        # up to their respective timeouts. A stop arriving during that
+        # window should abort before we spin up VAD/decode threads.
         if self._cancel_start.is_set():
             with self._lock:
                 self._starting = False
