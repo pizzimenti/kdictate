@@ -20,15 +20,18 @@ with no measurable accuracy loss, even under heavy background noise
 (SNR 5 dB).  Beam 3 is free on the GPU (the encoder dominates) and
 preserves capitalization and punctuation that beam 1 sometimes drops.
 
-Backend selection is controlled by `--backend cpu|gpu|auto`:
+Backend selection is controlled by `--backend cpu|gpu`:
 
 - `cpu` — use faster-whisper (default, no GPU needed).
 - `gpu` — require whisper.cpp + Vulkan; fail if unavailable.
-- `auto` — try GPU, fall back to CPU silently.
 
-The installer auto-detects GPU availability and prompts the user.
-When GPU mode is selected, `--backend auto` is baked into the systemd
-service so the daemon tries GPU first on every start.
+The backend is chosen **once, at install time** — exactly one, never both.
+The installer detects GPU availability, prompts, downloads only that
+backend's model, and pins the choice (a packaged install via a systemd
+drop-in, a source install by baking the flag into its unit). There is no
+`auto`/runtime fallback: the other backend's model isn't provisioned, so a
+fallback would fail anyway — and a silent 2× slowdown is worse than a clear
+failure you can act on.
 
 ## Requirements for GPU mode
 
