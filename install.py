@@ -154,13 +154,18 @@ def _detect_gpu() -> tuple[str | None, list[str]]:
     reasons: list[str] = []
     distro = _detect_distro()
 
-    # A packaged install ships a vendored whisper-cli under the private
-    # prefix; prefer it, then fall back to PATH for source/dev checkouts.
+    # Mirror kdictate.backend.find_whisper_cpp resolution so the installer's
+    # GPU detection agrees with runtime discovery: an explicit
+    # $KDICTATE_WHISPER_CLI override (e.g. a packaging/build-whisper.sh build
+    # in a source checkout), then the vendored package binary, then PATH.
+    override = os.environ.get("KDICTATE_WHISPER_CLI")
     vendored = Path("/usr/lib/kdictate/bin/whisper-cli")
-    binary = (
-        str(vendored) if (vendored.is_file() and os.access(vendored, os.X_OK))
-        else (shutil.which("whisper-cli") or shutil.which("whisper-cpp"))
-    )
+    if override and os.path.isfile(override) and os.access(override, os.X_OK):
+        binary = override
+    elif vendored.is_file() and os.access(vendored, os.X_OK):
+        binary = str(vendored)
+    else:
+        binary = shutil.which("whisper-cli") or shutil.which("whisper-cpp")
     if binary is None:
         # Packaged installs resolve to the vendored binary above and never
         # reach here. This hint is for source/dev checkouts: build the
