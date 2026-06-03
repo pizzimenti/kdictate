@@ -32,9 +32,21 @@ service so the daemon tries GPU first on every start.
 
 ## Requirements for GPU mode
 
-- `whisper-cpp` with Vulkan support on `PATH` (Arch: `yay -S whisper.cpp-vulkan`)
+GPU mode ships vendored with the kdictate package: a pinned,
+Vulkan-enabled `whisper-cli` is installed under `/usr/lib/kdictate/bin`
+with `ggml` bundled in — there is **no** dependency on `whisper.cpp-vulkan`
+or `llama.cpp-vulkan`.  See `docs/packaging.md` for why, and how to bump
+the pinned version.
+
+- The vendored `whisper-cli` — shipped by the package, or for a source
+  checkout built via `./packaging/build-whisper.sh` and selected with the
+  `$KDICTATE_WHISPER_CLI` environment variable
 - The GGML Q8_0 model (~874 MB), downloaded automatically by the installer
-- A Vulkan-capable GPU with working drivers
+- A Vulkan-capable GPU with a working driver
+
+The daemon resolves the binary in this order: `$KDICTATE_WHISPER_CLI`, then
+the vendored `/usr/lib/kdictate/bin/whisper-cli`, then a `whisper-cli` /
+`whisper-cpp` on `PATH` (see `find_whisper_cpp` in `backend.py`).
 
 ## Architecture
 

@@ -154,13 +154,25 @@ def _detect_gpu() -> tuple[str | None, list[str]]:
     reasons: list[str] = []
     distro = _detect_distro()
 
-    binary = shutil.which("whisper-cli") or shutil.which("whisper-cpp")
+    # Mirror kdictate.backend.find_whisper_cpp resolution so the installer's
+    # GPU detection agrees with runtime discovery: an explicit
+    # $KDICTATE_WHISPER_CLI override (e.g. a packaging/build-whisper.sh build
+    # in a source checkout), then the vendored package binary, then PATH.
+    override = os.environ.get("KDICTATE_WHISPER_CLI")
+    vendored = Path("/usr/lib/kdictate/bin/whisper-cli")
+    if override and os.path.isfile(override) and os.access(override, os.X_OK):
+        binary = override
+    elif vendored.is_file() and os.access(vendored, os.X_OK):
+        binary = str(vendored)
+    else:
+        binary = shutil.which("whisper-cli") or shutil.which("whisper-cpp")
     if binary is None:
-        if distro == "arch":
-            hint = "yay -S whisper.cpp-vulkan"
-        else:
-            hint = "build whisper.cpp from source with -DGGML_VULKAN=1"
-        reasons.append(f"whisper.cpp not found on PATH\n        Install:  {hint}")
+        # Packaged installs resolve to the vendored binary above and never
+        # reach here. This hint is for source/dev checkouts: build the
+        # *pinned* whisper so dev matches what ships — no AUR, no
+        # llama.cpp-vulkan, no daily churn.
+        hint = "./packaging/build-whisper.sh   (builds the pinned whisper.cpp)"
+        reasons.append(f"whisper.cpp not found\n        Install:  {hint}")
 
     if shutil.which("vulkaninfo") is None:
         reasons.append(

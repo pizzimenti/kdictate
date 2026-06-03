@@ -1,0 +1,16 @@
+# Python runtime dependencies vendored into the kdictate package
+# (pip-installed into /usr/lib/kdictate/vendor by packaging/PKGBUILD).
+#
+# This mirrors requirements.txt EXCEPT PyGObject: PyGObject builds C
+# extensions against the system gobject-introspection and is not a clean
+# `pip --only-binary` target, so it ships as the `python-gobject` system
+# dependency instead (see depends=() in PKGBUILD). Everything here has
+# manylinux/py3 wheels and vendors cleanly.
+#
+# Keep in sync with requirements.txt when bumping deps.
+ctranslate2>=4.5.0,<5.0.0
+faster-whisper>=1.1.1,<2.0.0
+huggingface-hub>=0.28.0,<1.0.0
+numpy>=1.24.0,<3.0.0
+psutil>=5.9.0,<7.0.0
+sounddevice>=0.4.6,<1.0.0

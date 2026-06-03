@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.12.0 — 2026-06-03
+
+### Added
+
+- **kdictate now ships as a self-contained Arch package** (`packaging/PKGBUILD`)
+  that vendors its entire runtime, removing the `whisper.cpp-vulkan` /
+  `llama.cpp-vulkan` AUR dependency and the daily-rebuild churn that came with
+  it. The GPU transcription stack — a pinned Vulkan `whisper.cpp` with `ggml`
+  bundled in — is built into `/usr/lib/kdictate` and version-locked to the
+  release, so it changes only when kdictate does. The Python dependencies are
+  pip-vendored alongside it (PyGObject excepted — it ships via system
+  `python-gobject`). whisper is compiled portable (multi-variant CPU dispatch +
+  Vulkan), so one package runs across Ryzen Zen 2 → Zen 5.
+- MIT `LICENSE` file.
+
+### Notes
+
+- Not yet turn-key: the speech model is still downloaded on first run, and the
+  packaged (system) install and `install.py` (per-user) paths don't yet
+  reconcile. See `docs/packaging.md` for the remaining follow-ups.
+
 ## 0.11.1 — 2026-05-17
 
 ### Fixed
