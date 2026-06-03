@@ -172,7 +172,5 @@ files — but it is **not yet a complete turn-key install**:
   files (`~/.local/share/ibus/component`, `~/.config/systemd/user`); the
   package writes system equivalents. Running both double-wires the engine.
   Decide which is canonical and have `install.py` detect a packaged install.
-- **No `LICENSE` file** exists in the repo yet, so the `package()` license
-  install is skipped — add one (`license=('MIT')` is declared).
 - **Service enablement** is left to the user (`systemctl --user enable
   --now io.github.pizzimenti.KDictate.service`), per Arch packaging norms.

@@ -15,7 +15,7 @@
 # so one package, compiled once, runs across Ryzen Zen 2 -> Zen 5.
 
 pkgname=kdictate
-pkgver=0.11.1
+pkgver=0.12.0
 pkgrel=1
 
 # The ONLY knob controlling the GPU transcription stack. Bump it
@@ -72,6 +72,9 @@ build() {
   python -m build --wheel --no-isolation
 
   # 2. Vendor the Python runtime deps as wheels (no source builds, no AUR).
+  #    pip --target doesn't prune packages no longer required, so rebuild
+  #    from a clean dir to avoid stale deps leaking into the package.
+  rm -rf "${srcdir}/vendor"
   python -m pip install \
     --target "${srcdir}/vendor" \
     --requirement packaging/vendor-requirements.txt \
@@ -119,23 +122,32 @@ package() {
 
   # --- wire the entry points to the vendored deps ---
   # Move the wheel's console scripts to libexec and replace each /usr/bin
-  # entry with a symlink to the launcher (which sets PYTHONPATH first).
+  # entry with the launcher (which sets PYTHONPATH, then execs the libexec
+  # script of the same name via basename "$0").
+  #
+  # The launcher is installed as a REGULAR FILE per entry point, not a
+  # symlink to a shared launcher: python-installer resolves the live
+  # scheme path on every (re)build and rejects a /usr/bin entry that
+  # symlinks outside /usr/bin, which would make the package un-upgradable.
   install -d "${pkgdir}${_prefix}/libexec"
-  install -Dm755 packaging/kdictate-launcher.sh "${pkgdir}${_prefix}/launcher"
   local ep
   for ep in "${_entrypoints[@]}"; do
     mv "${pkgdir}/usr/bin/${ep}" "${pkgdir}${_prefix}/libexec/${ep}"
-    ln -s "${_prefix}/launcher" "${pkgdir}/usr/bin/${ep}"
+    install -Dm755 packaging/kdictate-launcher.sh "${pkgdir}/usr/bin/${ep}"
   done
 
   # --- vendored whisper-cli + ggml backend modules ---
   DESTDIR="${pkgdir}" cmake --install "${srcdir}/whisper-build"
-  # Ship only the CLI: drop headers, cmake/pkgconfig, and other examples.
+  # Ship only the CLI: drop headers, cmake/pkgconfig, and the other example
+  # executables -- but KEEP the dlopen'd ggml backend modules that
+  # BACKEND_DL installs next to whisper-cli (libggml-vulkan.so and the
+  # libggml-cpu-*.so CPU variants). Deleting them leaves whisper-cli with no
+  # loadable compute backend, so GPU *and* CPU transcription both fail.
   rm -rf "${pkgdir}${_prefix}/include" \
          "${pkgdir}${_prefix}/lib/cmake" \
          "${pkgdir}${_prefix}/lib/pkgconfig"
   find "${pkgdir}${_prefix}/bin" -maxdepth 1 -type f \
-       ! -name 'whisper-cli' -delete
+       ! -name 'whisper-cli' ! -name '*.so' ! -name '*.so.*' -delete
 
   # --- system integration (templates rendered from per-user to system) ---
   # IBus engine component.
@@ -172,7 +184,5 @@ package() {
   install -Dm755 packaging/kdictate-plasma-wayland.sh \
     "${pkgdir}${_prefix}/kdictate-plasma-wayland.sh"
 
-  if [ -f LICENSE ]; then
-    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
-  fi
+  install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
 }

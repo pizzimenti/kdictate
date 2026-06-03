@@ -8,8 +8,10 @@
 # lives) to PYTHONPATH, then execs the real entry point of the same name
 # from libexec.
 #
-# Installed as /usr/bin/{kdictate-daemon,kdictatectl,ibus-engine-kdictate},
-# each a symlink to this script; basename "$0" selects which entry to run.
+# Installed as /usr/bin/{kdictate-daemon,kdictatectl,ibus-engine-kdictate}
+# (a regular-file copy per name, not a symlink — a /usr/bin entry that
+# symlinks outside /usr/bin breaks python-installer on rebuild/upgrade);
+# basename "$0" selects which entry to run.
 set -eu
 
 VENDOR_DIR="/usr/lib/kdictate/vendor"

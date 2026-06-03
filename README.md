@@ -155,17 +155,21 @@ the stack is version-locked to the kdictate release.  See
 `docs/packaging.md` for the rationale.
 
 1. Build and install the package (it carries the GPU stack):
+
    ```bash
    # Arch / Manjaro
    cd packaging && makepkg -si
    ```
+
    You also need a working Vulkan driver for your GPU — e.g.
    `vulkan-radeon`, `vulkan-intel`, or `nvidia-utils`.
 
 2. Run the installer — it detects GPU availability and prompts:
+
    ```bash
    python3 install.py
    ```
+
    If GPU mode is selected, the installer downloads only the Q8_0
    GGML model (~874 MB) and configures the systemd service with
    `--backend gpu`.  CPU mode downloads the CTranslate2 model
@@ -173,6 +177,7 @@ the stack is version-locked to the kdictate release.  See
 
 > **Running from a source checkout?** The package isn't installed, so build
 > the same pinned whisper locally and point kdictate at it:
+>
 > ```bash
 > ./packaging/build-whisper.sh
 > export KDICTATE_WHISPER_CLI="$PWD/.whisper/build/bin/whisper-cli"

@@ -107,10 +107,10 @@ def find_whisper_cpp() -> str | None:
     Generic names like ``main`` are never matched.
     """
     override = os.environ.get("KDICTATE_WHISPER_CLI")
-    if override and os.access(override, os.X_OK):
+    if override and os.path.isfile(override) and os.access(override, os.X_OK):
         return override
 
-    if os.access(_VENDORED_WHISPER, os.X_OK):
+    if os.path.isfile(_VENDORED_WHISPER) and os.access(_VENDORED_WHISPER, os.X_OK):
         return _VENDORED_WHISPER
 
     for name in ("whisper-cli", "whisper-cpp"):

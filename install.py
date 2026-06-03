@@ -158,7 +158,7 @@ def _detect_gpu() -> tuple[str | None, list[str]]:
     # prefix; prefer it, then fall back to PATH for source/dev checkouts.
     vendored = Path("/usr/lib/kdictate/bin/whisper-cli")
     binary = (
-        str(vendored) if vendored.is_file()
+        str(vendored) if (vendored.is_file() and os.access(vendored, os.X_OK))
         else (shutil.which("whisper-cli") or shutil.which("whisper-cpp"))
     )
     if binary is None:
