@@ -147,11 +147,20 @@ works across AMD, NVIDIA, and Intel GPUs.
 
 ### Setup
 
-1. Install whisper.cpp with Vulkan support:
+GPU support ships **with the package**: the kdictate package vendors a
+pinned, Vulkan-enabled `whisper.cpp` (with `ggml` bundled) under
+`/usr/lib/kdictate/`.  There is nothing extra to install and no dependency
+on the fast-moving `whisper.cpp-vulkan` / `llama.cpp-vulkan` AUR packages —
+the stack is version-locked to the kdictate release.  See
+`docs/packaging.md` for the rationale.
+
+1. Build and install the package (it carries the GPU stack):
    ```bash
-   # Arch / Manjaro (AUR)
-   yay -S whisper.cpp-vulkan
+   # Arch / Manjaro
+   cd packaging && makepkg -si
    ```
+   You also need a working Vulkan driver for your GPU — e.g.
+   `vulkan-radeon`, `vulkan-intel`, or `nvidia-utils`.
 
 2. Run the installer — it detects GPU availability and prompts:
    ```bash
@@ -161,6 +170,13 @@ works across AMD, NVIDIA, and Intel GPUs.
    GGML model (~874 MB) and configures the systemd service with
    `--backend gpu`.  CPU mode downloads the CTranslate2 model
    (~780 MB) and uses the default CPU backend.
+
+> **Running from a source checkout?** The package isn't installed, so build
+> the same pinned whisper locally and point kdictate at it:
+> ```bash
+> ./packaging/build-whisper.sh
+> export KDICTATE_WHISPER_CLI="$PWD/.whisper/build/bin/whisper-cli"
+> ```
 
 See `docs/gpu-mode.md` for architecture details and benchmark results.
 

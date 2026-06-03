@@ -1,0 +1,178 @@
+# Maintainer: Bradley <bradley@gennakersystems.com>
+#
+# Self-contained kdictate package. Two things are vendored so the package
+# has no fast-moving or AUR-only runtime dependencies:
+#
+#   1. The Vulkan whisper.cpp GPU stack, with ggml bundled and built into
+#      /usr/lib/kdictate (no whisper.cpp-vulkan / llama.cpp-vulkan dep;
+#      pinned to _whisper_ver; see docs/packaging.md).
+#   2. kdictate's Python runtime deps, pip-installed into
+#      /usr/lib/kdictate/vendor (mirrors the voiceagent package) so we
+#      don't depend on AUR python packages and pin exactly what
+#      requirements.txt specifies.
+#
+# whisper is built portable (NATIVE off + CPU_ALL_VARIANTS + BACKEND_DL)
+# so one package, compiled once, runs across Ryzen Zen 2 -> Zen 5.
+
+pkgname=kdictate
+pkgver=0.11.1
+pkgrel=1
+
+# The ONLY knob controlling the GPU transcription stack. Bump it
+# deliberately when cutting a kdictate release; it never floats.
+_whisper_ver=1.8.6
+
+pkgdesc='Push-to-talk dictation for KDE Plasma (Vulkan-accelerated)'
+arch=('x86_64')
+url='https://github.com/pizzimenti/kdictate'
+license=('MIT')
+options=(!debug)
+
+# System libraries only. The Python deps are vendored (see vendor step),
+# except PyGObject -> python-gobject, which builds C bindings against the
+# system gobject-introspection and isn't a clean pip --only-binary target.
+# portaudio provides libportaudio for the vendored sounddevice.
+depends=(
+  'python'
+  'python-gobject'
+  'ibus'
+  'portaudio'
+  'vulkan-icd-loader'
+)
+
+makedepends=(
+  'cmake'
+  'vulkan-headers'
+  'shaderc'                  # glslc — compiles the ggml Vulkan shaders
+  'python-build'
+  'python-installer'
+  'python-wheel'
+  'python-setuptools'
+  'python-pip'               # pip --target, for vendoring the Python deps
+)
+
+source=(
+  "whisper.cpp-${_whisper_ver}.tar.gz::https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v${_whisper_ver}.tar.gz"
+)
+sha256sums=(
+  'f8e632016ceae556f3132a16c7f704be1e7715595041f474fa81a2b64c1abf7c'
+)
+
+_prefix='/usr/lib/kdictate'
+_entrypoints=(kdictate-daemon kdictatectl ibus-engine-kdictate)
+
+build() {
+  local src="${srcdir}/whisper.cpp-${_whisper_ver}"
+  local bld="${srcdir}/whisper-build"
+
+  # 1. kdictate's own wheel. The PKGBUILD lives in packaging/, so the
+  #    project root (pyproject.toml) is one level up from ${startdir}.
+  cd "${startdir}/.."
+  rm -rf build dist ./*.egg-info
+  python -m build --wheel --no-isolation
+
+  # 2. Vendor the Python runtime deps as wheels (no source builds, no AUR).
+  python -m pip install \
+    --target "${srcdir}/vendor" \
+    --requirement packaging/vendor-requirements.txt \
+    --only-binary=:all: \
+    --disable-pip-version-check \
+    --no-compile
+
+  # 3. Vendored whisper.cpp + bundled ggml, Vulkan, portable multi-variant.
+  #    USE_SYSTEM_GGML=OFF          -> compile whisper's pinned ggml (no llama dep)
+  #    GGML_VULKAN=ON               -> GPU path
+  #    GGML_NATIVE=OFF              -> no -march=native; would SIGILL on Zen 2/3
+  #    CPU_ALL_VARIANTS+BACKEND_DL  -> baseline/AVX2/AVX-512, runtime dispatch
+  #    SDL2=OFF                     -> WAV over stdin; also drops talk-llama
+  #    RPATH $ORIGIN/../lib         -> whisper-cli finds its bundled backends
+  cmake -B "${bld}" -S "${src}" \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="${_prefix}" \
+    -DCMAKE_INSTALL_RPATH='$ORIGIN/../lib' \
+    -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+    -DWHISPER_USE_SYSTEM_GGML=OFF \
+    -DGGML_VULKAN=ON \
+    -DGGML_NATIVE=OFF \
+    -DGGML_CPU_ALL_VARIANTS=ON \
+    -DGGML_BACKEND_DL=ON \
+    -DBUILD_SHARED_LIBS=ON \
+    -DWHISPER_SDL2=OFF \
+    -DWHISPER_FFMPEG=OFF \
+    -DWHISPER_BUILD_SERVER=OFF \
+    -DWHISPER_BUILD_TESTS=OFF \
+    -DWHISPER_BUILD_EXAMPLES=ON
+  cmake --build "${bld}"
+}
+
+package() {
+  # Project root is one level up from the PKGBUILD's packaging/ dir.
+  cd "${startdir}/.."
+
+  # --- kdictate Python package (code -> system site-packages) ---
+  python -m installer --destdir="${pkgdir}" dist/*.whl
+
+  # --- vendored runtime deps ---
+  install -d "${pkgdir}${_prefix}/vendor"
+  cp -a "${srcdir}/vendor/." "${pkgdir}${_prefix}/vendor/"
+  find "${pkgdir}${_prefix}/vendor" -name '*.pyc' -delete
+
+  # --- wire the entry points to the vendored deps ---
+  # Move the wheel's console scripts to libexec and replace each /usr/bin
+  # entry with a symlink to the launcher (which sets PYTHONPATH first).
+  install -d "${pkgdir}${_prefix}/libexec"
+  install -Dm755 packaging/kdictate-launcher.sh "${pkgdir}${_prefix}/launcher"
+  local ep
+  for ep in "${_entrypoints[@]}"; do
+    mv "${pkgdir}/usr/bin/${ep}" "${pkgdir}${_prefix}/libexec/${ep}"
+    ln -s "${_prefix}/launcher" "${pkgdir}/usr/bin/${ep}"
+  done
+
+  # --- vendored whisper-cli + ggml backend modules ---
+  DESTDIR="${pkgdir}" cmake --install "${srcdir}/whisper-build"
+  # Ship only the CLI: drop headers, cmake/pkgconfig, and other examples.
+  rm -rf "${pkgdir}${_prefix}/include" \
+         "${pkgdir}${_prefix}/lib/cmake" \
+         "${pkgdir}${_prefix}/lib/pkgconfig"
+  find "${pkgdir}${_prefix}/bin" -maxdepth 1 -type f \
+       ! -name 'whisper-cli' -delete
+
+  # --- system integration (templates rendered from per-user to system) ---
+  # IBus engine component.
+  install -d "${pkgdir}/usr/share/ibus/component"
+  sed -e 's|@@ENGINE_EXEC@@|/usr/bin/ibus-engine-kdictate|g' \
+      -e "s|@@APP_VERSION@@|${pkgver}|g" \
+      packaging/io.github.pizzimenti.KDictate.component.xml \
+      > "${pkgdir}/usr/share/ibus/component/io.github.pizzimenti.KDictate.component.xml"
+
+  # systemd user service (default to --backend auto: GPU, else CPU).
+  install -d "${pkgdir}/usr/lib/systemd/user"
+  sed -e 's|WorkingDirectory=@@REPO_DIR@@|WorkingDirectory='"${_prefix}"'|' \
+      -e 's|@@REPO_DIR@@/.venv/bin/kdictate-daemon|/usr/bin/kdictate-daemon|' \
+      -e 's|@@BACKEND_FLAGS@@| --backend auto|' \
+      packaging/kdictate-systemd.service \
+      > "${pkgdir}/usr/lib/systemd/user/io.github.pizzimenti.KDictate.service"
+
+  # D-Bus session activation.
+  install -d "${pkgdir}/usr/share/dbus-1/services"
+  sed -e 's|@@REPO_DIR@@/.venv/bin/kdictate-daemon|/usr/bin/kdictate-daemon|' \
+      -e 's|@@BACKEND_FLAGS@@| --backend auto|' \
+      packaging/io.github.pizzimenti.KDictate.service \
+      > "${pkgdir}/usr/share/dbus-1/services/io.github.pizzimenti.KDictate.service"
+
+  # Session environment (IBus component path + XMODIFIERS). environment.d
+  # expands ${HOME} per-user at session start, so this is system-wide-safe.
+  install -d "${pkgdir}/usr/lib/environment.d"
+  sed 's|@@HOME@@|${HOME}|g' packaging/60-kdictate-ibus.conf \
+      > "${pkgdir}/usr/lib/environment.d/60-kdictate-ibus.conf"
+
+  # Toggle action (static) and the Plasma-Wayland IM helper.
+  install -Dm644 packaging/io.github.pizzimenti.KDictateToggle.desktop \
+    "${pkgdir}/usr/share/applications/io.github.pizzimenti.KDictateToggle.desktop"
+  install -Dm755 packaging/kdictate-plasma-wayland.sh \
+    "${pkgdir}${_prefix}/kdictate-plasma-wayland.sh"
+
+  if [ -f LICENSE ]; then
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+  fi
+}

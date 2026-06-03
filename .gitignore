@@ -5,4 +5,16 @@ __pycache__/
 outputs/
 .codex
 .claude/
+/.whisper/
+
+# makepkg build artifacts
+/packaging/src/
+/packaging/pkg/
+/packaging/*.pkg.tar.*
+/packaging/*.tar.gz
+
+# Python wheel build artifacts (makepkg builds the wheel in the repo root)
+/build/
+/dist/
+/*.egg-info/
 

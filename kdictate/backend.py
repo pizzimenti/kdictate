@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import shutil
 import subprocess
 import wave
@@ -89,12 +90,29 @@ def _pcm_to_wav_bytes(pcm_chunks: list[Any], sample_rate: int = 16000) -> bytes:
     return buf.getvalue()
 
 
-def find_whisper_cpp() -> str | None:
-    """Return the path to a whisper.cpp binary, or None.
+# Installed by the kdictate package; version-locked to this release.
+# A packaged install always resolves here, never to whatever whisper.cpp
+# the host's package manager happens to have.
+_VENDORED_WHISPER = "/usr/lib/kdictate/bin/whisper-cli"
 
-    Only checks canonical whisper.cpp binary names — never generic names
-    like ``main`` that could match unrelated executables.
+
+def find_whisper_cpp() -> str | None:
+    """Return the path to the whisper.cpp binary, or None.
+
+    Resolution order, most to least specific:
+      1. ``$KDICTATE_WHISPER_CLI`` — explicit override (dev / custom builds)
+      2. the vendored binary shipped with the kdictate package
+      3. a canonical whisper.cpp on PATH (source/dev fallback)
+
+    Generic names like ``main`` are never matched.
     """
+    override = os.environ.get("KDICTATE_WHISPER_CLI")
+    if override and os.access(override, os.X_OK):
+        return override
+
+    if os.access(_VENDORED_WHISPER, os.X_OK):
+        return _VENDORED_WHISPER
+
     for name in ("whisper-cli", "whisper-cpp"):
         path = shutil.which(name)
         if path is not None:
