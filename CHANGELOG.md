@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.13.0 — 2026-06-04
+
+### Changed
+
+- **Lower the default speech-detection threshold** (`energy_threshold`
+  `1000 → 700`). Weak/quiet digital microphones produce speech below the old
+  floor and weren't detected; a normal mic's ambient level sits far above
+  both values, so this is safe there. Still tunable with `--energy-threshold`
+  (lower for quiet mics, raise for noisy rooms).
+- **`install.py` is now packaging-aware.** On a system where the kdictate
+  package is installed, the installer runs in *configurator* mode: it
+  downloads the model, wires the per-user KDE bits, and enables the
+  package's **system** service — skipping the redundant venv and the
+  per-user systemd/D-Bus/IBus units that previously shadowed the package
+  (and clearing any stale ones from an earlier install). Source checkouts
+  keep the venv flow unchanged.
+- **No runtime backend fallback — the installer chooses, exactly one.** The
+  backend is fixed at install time: `gpu` (or fail) or `cpu`, never both.
+  `--backend auto` is removed. A GPU install only provisions the GGML model,
+  so the old silent GPU→CPU fallback had no CPU model to load anyway (it would
+  error or trigger a surprise 780 MB download mid-dictation). The installer
+  now downloads one model and pins the choice (packaged: a systemd drop-in;
+  source: the rendered unit).
+
 ## 0.12.0 — 2026-06-03
 
 ### Added

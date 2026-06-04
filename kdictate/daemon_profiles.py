@@ -20,7 +20,7 @@ def daemon_arg_defaults() -> dict[str, object]:
         "cpu_threads": recommended_shortform_cpu_threads(),
         "compute_type": "int8",
         "block_ms": 30,
-        "energy_threshold": 1000.0,
+        "energy_threshold": 700.0,
         "silence_ms": 600,
         "min_speech_ms": 120,
         "start_speech_ms": 90,

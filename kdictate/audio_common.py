@@ -22,7 +22,7 @@ UTTERANCE_QUEUE_MAXSIZE = 64  # max in-flight utterances
 #
 # Why not gate on audio energy?
 #   The VAD only commits utterances whose per-block RMS already exceeds
-#   energy_threshold (default 1000).  Ambient mic noise in a typical room
+#   energy_threshold (default 700).  Ambient mic noise in a typical room
 #   produces avg_rms of 2000-4000 even during "silence", so every
 #   committed utterance — including hallucinated ones — arrives with RMS
 #   well above any useful suppression ceiling.  An RMS gate would simply
@@ -151,7 +151,7 @@ class VADConfig:
 
     sample_rate: int = 16000
     block_ms: int = 30
-    energy_threshold: float = 1000.0
+    energy_threshold: float = 700.0
     silence_ms: int = 600
     min_speech_ms: int = 120
     start_speech_ms: int = 90

@@ -76,9 +76,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--backend",
-        choices=("cpu", "gpu", "auto"),
+        choices=("cpu", "gpu"),
         default="cpu",
-        help="Transcription backend: cpu (faster-whisper), gpu (whisper.cpp Vulkan), or auto.",
+        help="Transcription backend: cpu (faster-whisper) or gpu (whisper.cpp "
+             "Vulkan). Chosen once at install time; no runtime fallback.",
     )
     parser.add_argument(
         "--model-dir",
@@ -138,7 +139,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--energy-threshold",
         type=float,
         default=defaults["energy_threshold"],
-        help="RMS threshold for speech detection.",
+        help="RMS threshold for speech detection. Lower it (e.g. 500) for "
+             "weak/quiet microphones that don't cross the default; raise it "
+             "for noisy environments with false triggers.",
     )
     parser.add_argument(
         "--silence-ms",

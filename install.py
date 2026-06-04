@@ -85,7 +85,7 @@ class InstallContext:
             "@@ENGINE_EXEC@@": str(self.engine_exec),
             "@@HOME@@": str(self.home),
             "@@APP_VERSION@@": __version__,
-            "@@BACKEND_FLAGS@@": " --backend gpu" if self.gpu else "",
+            "@@BACKEND_FLAGS@@": " --backend gpu" if self.gpu else " --backend cpu",
         }
 
 
@@ -337,6 +337,22 @@ def _model_files_present(
     return True
 
 
+def _hf_download_env(ctx: InstallContext) -> tuple[str, dict[str, str] | None]:
+    """(python executable, env) for running huggingface_hub downloads.
+
+    Source installs use the venv python (which has the deps). A packaged
+    install has no venv, so use the system python with the package's
+    vendored deps on PYTHONPATH.
+    """
+    if _is_packaged_install():
+        vendor = "/usr/lib/kdictate/vendor"
+        env = dict(os.environ)
+        existing = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = vendor + os.pathsep + existing if existing else vendor
+        return "/usr/bin/python", env
+    return str(ctx.python_bin), None
+
+
 def download_cpu_model(ctx: InstallContext) -> None:
     """Download the CTranslate2 model with a single clean progress bar.
 
@@ -353,13 +369,14 @@ def download_cpu_model(ctx: InstallContext) -> None:
     if _model_files_present(model_dir, _CPU_MODEL_REQUIRED_FILES):
         print(f"  (model already present at {model_dir}, skipping download)")
         return
+    py, env = _hf_download_env(ctx)
     subprocess.run([
-        str(ctx.python_bin), "-u", "-c",
+        py, "-u", "-c",
         f"from huggingface_hub import snapshot_download; "
         f"snapshot_download(repo_id={DEFAULT_MODEL_HF_REPO!r}, "
         f"local_dir={str(model_dir)!r}, "
         f"max_workers=1)",
-    ], check=True)
+    ], check=True, env=env)
 
 
 def download_gpu_model(ctx: InstallContext) -> None:
@@ -376,13 +393,14 @@ def download_gpu_model(ctx: InstallContext) -> None:
     if GGML_MODEL_PATH.is_file() and GGML_MODEL_PATH.stat().st_size >= 700_000_000:
         print(f"  (model already present at {GGML_MODEL_PATH}, skipping download)")
         return
+    py, env = _hf_download_env(ctx)
     subprocess.run([
-        str(ctx.python_bin), "-u", "-c",
+        py, "-u", "-c",
         f"from huggingface_hub import hf_hub_download; "
         f"hf_hub_download(repo_id={GGML_MODEL_HF_REPO!r}, "
         f"filename={GGML_MODEL_FILENAME!r}, "
         f"local_dir={str(GGML_MODEL_PATH.parent)!r})",
-    ], check=True)
+    ], check=True, env=env)
 
 
 def next_preload_engines(current: str, engine_id: str) -> str | None:
@@ -545,6 +563,68 @@ def reload_systemd_user(ctx: InstallContext) -> None:
     run_command(["systemctl", "--user", "restart", SERVICE_NAME], quiet=True)
 
 
+def _is_packaged_install() -> bool:
+    """True when kdictate is installed as a system package.
+
+    The package provides the runtime, the /usr/bin launchers, and the
+    system-level integration files (systemd unit, D-Bus service, IBus
+    component, env.d). When present, the installer runs in *configurator*
+    mode: it downloads the model, wires the per-user KDE bits, and enables
+    the package's system service -- it does NOT build a venv or install
+    per-user copies that would shadow the package.
+    """
+    return (
+        Path("/usr/lib/kdictate/bin/whisper-cli").exists()
+        and (Path("/usr/lib/systemd/user") / SERVICE_NAME).exists()
+    )
+
+
+def _cleanup_shadowing_user_setup(ctx: InstallContext) -> None:
+    """Remove per-user files that would shadow the system package.
+
+    A prior source install (or earlier run) leaves per-user systemd/D-Bus/
+    IBus units pointing at a venv; left in place they override the package's
+    system units, so the venv daemon runs instead of the packaged one.
+    Remove them and the now-redundant venv so the package is authoritative.
+    The model and other runtime state are left intact.
+    """
+    for path in (
+        ctx.home / ".config/systemd/user" / SERVICE_NAME,
+        ctx.home / ".local/share/dbus-1/services" / DBUS_SERVICE_NAME,
+        ctx.home / ".local/share/ibus/component" / IBUS_COMPONENT_NAME,
+        ctx.home / ".config/environment.d" / IBUS_ENV_FILE_NAME,
+    ):
+        if path.is_symlink() or path.exists():
+            path.unlink()
+            log(f"removed shadowing per-user file: {path}")
+    if ctx.venv_dir.exists():
+        shutil.rmtree(ctx.venv_dir, ignore_errors=True)
+        log(f"removed redundant venv: {ctx.venv_dir}")
+
+
+def _write_backend_dropin(ctx: InstallContext) -> None:
+    """Pin the package's system service to the install-time backend choice.
+
+    The package unit ships a default backend flag; this systemd drop-in
+    overrides ExecStart with the explicit gpu/cpu chosen here, so a packaged
+    install runs exactly one backend -- never auto/both, no runtime fallback.
+    """
+    if ctx.gpu:
+        exec_args = "--backend gpu"
+    else:
+        # The packaged daemon's default CT2 model_dir is PROJECT_ROOT-relative
+        # (site-packages), not the runtime dir where install.py downloads it,
+        # so packaged CPU mode must be pointed at the model explicitly.
+        exec_args = f"--backend cpu --model-dir {ctx.runtime_dir / DEFAULT_MODEL_NAME}"
+    dropin = ctx.home / ".config/systemd/user" / f"{SERVICE_NAME}.d" / "10-backend.conf"
+    write_home_file(
+        ctx, dropin,
+        "[Service]\n"
+        "ExecStart=\n"
+        f"ExecStart=/usr/bin/kdictate-daemon {exec_args}\n",
+    )
+
+
 # -------------------------------------------------------------------
 # Main
 # -------------------------------------------------------------------
@@ -575,19 +655,28 @@ def main() -> int:
         )
 
     print()
+    packaged = _is_packaged_install()
+    if packaged:
+        log("Packaged install detected — configuring the system package "
+            "(model + per-user KDE wiring + system service; no venv).")
+
     preflight_ibus()
-    for cmd in ("python3", "systemctl", "rsync", "dconf"):
+    required = ["python3", "systemctl", "dconf"]
+    if not packaged:
+        required.insert(2, "rsync")
+    for cmd in required:
         require_command(cmd)
 
     pkg = ctx.script_dir / "packaging"
 
-    step("Syncing runtime files")
-    sync_runtime(ctx)
-    step_done()
+    if not packaged:
+        step("Syncing runtime files")
+        sync_runtime(ctx)
+        step_done()
 
-    step("Setting up Python environment")
-    install_python_environment(ctx)
-    step_done()
+        step("Setting up Python environment")
+        install_python_environment(ctx)
+        step_done()
 
     if gpu:
         step("Downloading GPU model")
@@ -598,28 +687,44 @@ def main() -> int:
         download_cpu_model(ctx)
         step_done(DEFAULT_MODEL_HF_REPO)
 
-    step("Installing systemd user service")
-    install_rendered_file(ctx, pkg / "kdictate-systemd.service",
-                          ctx.home / ".config/systemd/user" / SERVICE_NAME)
-    step_done()
+    if packaged:
+        step("Clearing stale per-user setup")
+        _cleanup_shadowing_user_setup(ctx)
+        step_done()
 
-    step("Installing D-Bus activation service")
-    install_rendered_file(ctx, pkg / f"{APP_ROOT_ID}.service",
-                          ctx.home / ".local/share/dbus-1/services" / DBUS_SERVICE_NAME)
-    step_done()
+        step("Pinning backend")
+        _write_backend_dropin(ctx)
+        step_done(f"--backend {'gpu' if gpu else 'cpu'}")
+    else:
+        # A prior packaged/configurator run leaves a backend drop-in that would
+        # override this venv-backed unit; clear it before writing the source one.
+        dropin_dir = ctx.home / ".config/systemd/user" / f"{SERVICE_NAME}.d"
+        if dropin_dir.exists():
+            shutil.rmtree(dropin_dir, ignore_errors=True)
 
-    step("Installing IBus engine metadata")
-    install_rendered_file(ctx, pkg / IBUS_COMPONENT_NAME,
-                          ctx.home / ".local/share/ibus/component" / IBUS_COMPONENT_NAME)
-    install_rendered_file(ctx, pkg / IBUS_ENV_FILE_NAME,
-                          ctx.home / ".config/environment.d" / IBUS_ENV_FILE_NAME)
-    step_done()
+        step("Installing systemd user service")
+        install_rendered_file(ctx, pkg / "kdictate-systemd.service",
+                              ctx.home / ".config/systemd/user" / SERVICE_NAME)
+        step_done()
+
+        step("Installing D-Bus activation service")
+        install_rendered_file(ctx, pkg / f"{APP_ROOT_ID}.service",
+                              ctx.home / ".local/share/dbus-1/services" / DBUS_SERVICE_NAME)
+        step_done()
+
+        step("Installing IBus engine metadata")
+        install_rendered_file(ctx, pkg / IBUS_COMPONENT_NAME,
+                              ctx.home / ".local/share/ibus/component" / IBUS_COMPONENT_NAME)
+        install_rendered_file(ctx, pkg / IBUS_ENV_FILE_NAME,
+                              ctx.home / ".config/environment.d" / IBUS_ENV_FILE_NAME)
+        step_done()
 
     step("Installing KDE/Plasma integration")
     copy_home_file(ctx, pkg / PLASMA_ENV_SCRIPT_NAME,
                    ctx.home / ".config/plasma-workspace/env" / PLASMA_ENV_SCRIPT_NAME)
-    install_rendered_file(ctx, pkg / TOGGLE_DESKTOP_NAME,
-                          ctx.home / ".local/share/applications" / TOGGLE_DESKTOP_NAME)
+    if not packaged:
+        install_rendered_file(ctx, pkg / TOGGLE_DESKTOP_NAME,
+                              ctx.home / ".local/share/applications" / TOGGLE_DESKTOP_NAME)
     if shutil.which("kbuildsycoca6") is not None:
         run_command(["kbuildsycoca6", "--noincremental"], quiet=True, check=False)
     register_global_shortcut(ctx)
@@ -645,8 +750,9 @@ def main() -> int:
         time.sleep(1)
     step_done()
 
-    mode = "GPU + CPU fallback" if gpu else "CPU only"
-    print(f"\n  \U0001f389 KDictate {__version__} installed ({mode})")
+    verb = "configured" if packaged else "installed"
+    mode = "GPU (Vulkan)" if gpu else "CPU (faster-whisper)"
+    print(f"\n  \U0001f389 KDictate {__version__} {verb} ({mode})")
     print("     Ctrl+Space to toggle dictation.\n")
     return 0
 

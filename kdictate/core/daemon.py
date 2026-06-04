@@ -1041,17 +1041,17 @@ def main(argv: list[str] | None = None) -> int:
     backend_name = config.backend
     backend: TranscriptionBackend | None = None
 
-    if backend_name in ("gpu", "auto"):
+    # Backend is fixed at install time -- gpu (or fail) / cpu, never both,
+    # no silent runtime fallback (the other backend's model isn't provisioned).
+    if backend_name == "gpu":
         from kdictate.backend import create_gpu_backend
         gpu = create_gpu_backend(config)
-        if gpu is not None:
-            backend = gpu
-            logger.info("using GPU backend (whisper.cpp + Vulkan)")
-        elif backend_name == "gpu":
+        if gpu is None:
             logger.error("GPU backend requested but unavailable")
             return 1
-
-    if backend is None:
+        backend = gpu
+        logger.info("using GPU backend (whisper.cpp + Vulkan)")
+    else:
         try:
             model, runtime = load_model(config)
         except (ConfigurationError, FileNotFoundError) as exc:

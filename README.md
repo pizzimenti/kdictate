@@ -187,7 +187,7 @@ See `docs/gpu-mode.md` for architecture details and benchmark results.
 
 ## Tuning
 
-- `--backend cpu|gpu|auto`: transcription backend (default: cpu).
+- `--backend cpu|gpu`: transcription backend, fixed at install time (default: cpu; no runtime fallback).
 - `--cpu-threads N`: override thread count. Dictation-oriented defaults now use physical cores / short-form-friendly thread counts.
 - `--compute-type int8|float16|float32`: precision/runtime tradeoff.
 - `--language`: defaults to `en`.

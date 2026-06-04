@@ -156,21 +156,33 @@ The IBus component, systemd unit, and D-Bus service files carry
 placeholders that `install.py` renders for a per-user venv install. The
 package renders them to **system** paths in `package()` (entry points under
 `/usr/bin`, component under `/usr/share/ibus/component`, etc.), defaulting
-the daemon to `--backend auto`. `@@HOME@@` becomes `${HOME}`, which
+the daemon to `--backend gpu` (the installer pins the real gpu/cpu choice via
+a user drop-in — never `auto`/both). `@@HOME@@` becomes `${HOME}`, which
 `environment.d` expands per-user at session start.
 
-## Packaging follow-ups (not yet done)
+## Install model: package + configurator
 
-The package installs the binary, the Python runtime, and all integration
-files — but it is **not yet a complete turn-key install**:
+After `makepkg -si`, run `python3 install.py` once to finish setup. On a
+packaged system the installer auto-detects this (`_is_packaged_install`) and
+runs in **configurator mode**: it downloads the model and wires the per-user
+KDE bits, then enables the package's **system** service — it does *not* build
+a venv or install per-user systemd/D-Bus/IBus units (the package provides
+those at system paths), and it clears any stale per-user units left by an
+earlier source install. Source checkouts keep the full venv flow.
 
-- **Model provisioning.** The ~874 MB GGML/CTranslate2 model is still
-  fetched by `install.py` on first run; the package does not ship or fetch
-  it. A first-run daemon step (or a `kdictate-model` split package) is
-  needed before a package-only install can transcribe.
-- **`install.py` vs package coexistence.** `install.py` writes per-user
-  files (`~/.local/share/ibus/component`, `~/.config/systemd/user`); the
-  package writes system equivalents. Running both double-wires the engine.
-  Decide which is canonical and have `install.py` detect a packaged install.
-- **Service enablement** is left to the user (`systemctl --user enable
-  --now io.github.pizzimenti.KDictate.service`), per Arch packaging norms.
+This resolves the former coexistence double-wiring (the per-user venv units
+no longer shadow the package's system units).
+
+## Remaining follow-ups
+
+- **Fully standalone package.** `install.py` is still required once as the
+  configurator (it fetches the ~874 MB model and enables the service). A pure
+  `pacman -U` with no configurator step would need either a first-run
+  model fetch in the daemon or a `kdictate-model` split package. Deferred
+  deliberately: the large model fetch wants a visible setup step anyway, so a
+  silent daemon download would be worse UX. (See the "configurator vs
+  standalone" decision.)
+- **`install.py` ships with the repo, not the package.** Running the
+  configurator on another box currently needs the source tree (or at least
+  `install.py` + `packaging/`) copied alongside the `.pkg.tar.zst`. Folding a
+  `kdictate-configure` entry point into the package would remove that.

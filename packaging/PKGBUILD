@@ -15,7 +15,7 @@
 # so one package, compiled once, runs across Ryzen Zen 2 -> Zen 5.
 
 pkgname=kdictate
-pkgver=0.12.0
+pkgver=0.13.0
 pkgrel=1
 
 # The ONLY knob controlling the GPU transcription stack. Bump it
@@ -157,18 +157,20 @@ package() {
       packaging/io.github.pizzimenti.KDictate.component.xml \
       > "${pkgdir}/usr/share/ibus/component/io.github.pizzimenti.KDictate.component.xml"
 
-  # systemd user service (default to --backend auto: GPU, else CPU).
+  # systemd user service. Defaults to --backend gpu (the package's purpose);
+  # install.py pins the actual gpu/cpu choice via a user drop-in. No 'auto'
+  # fallback -- exactly one backend is provisioned at install time.
   install -d "${pkgdir}/usr/lib/systemd/user"
   sed -e 's|WorkingDirectory=@@REPO_DIR@@|WorkingDirectory='"${_prefix}"'|' \
       -e 's|@@REPO_DIR@@/.venv/bin/kdictate-daemon|/usr/bin/kdictate-daemon|' \
-      -e 's|@@BACKEND_FLAGS@@| --backend auto|' \
+      -e 's|@@BACKEND_FLAGS@@| --backend gpu|' \
       packaging/kdictate-systemd.service \
       > "${pkgdir}/usr/lib/systemd/user/io.github.pizzimenti.KDictate.service"
 
   # D-Bus session activation.
   install -d "${pkgdir}/usr/share/dbus-1/services"
   sed -e 's|@@REPO_DIR@@/.venv/bin/kdictate-daemon|/usr/bin/kdictate-daemon|' \
-      -e 's|@@BACKEND_FLAGS@@| --backend auto|' \
+      -e 's|@@BACKEND_FLAGS@@| --backend gpu|' \
       packaging/io.github.pizzimenti.KDictate.service \
       > "${pkgdir}/usr/share/dbus-1/services/io.github.pizzimenti.KDictate.service"
 
