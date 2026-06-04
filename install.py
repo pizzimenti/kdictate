@@ -337,6 +337,22 @@ def _model_files_present(
     return True
 
 
+def _hf_download_env(ctx: InstallContext) -> tuple[str, dict[str, str] | None]:
+    """(python executable, env) for running huggingface_hub downloads.
+
+    Source installs use the venv python (which has the deps). A packaged
+    install has no venv, so use the system python with the package's
+    vendored deps on PYTHONPATH.
+    """
+    if _is_packaged_install():
+        vendor = "/usr/lib/kdictate/vendor"
+        env = dict(os.environ)
+        existing = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = vendor + os.pathsep + existing if existing else vendor
+        return "/usr/bin/python", env
+    return str(ctx.python_bin), None
+
+
 def download_cpu_model(ctx: InstallContext) -> None:
     """Download the CTranslate2 model with a single clean progress bar.
 
@@ -353,13 +369,14 @@ def download_cpu_model(ctx: InstallContext) -> None:
     if _model_files_present(model_dir, _CPU_MODEL_REQUIRED_FILES):
         print(f"  (model already present at {model_dir}, skipping download)")
         return
+    py, env = _hf_download_env(ctx)
     subprocess.run([
-        str(ctx.python_bin), "-u", "-c",
+        py, "-u", "-c",
         f"from huggingface_hub import snapshot_download; "
         f"snapshot_download(repo_id={DEFAULT_MODEL_HF_REPO!r}, "
         f"local_dir={str(model_dir)!r}, "
         f"max_workers=1)",
-    ], check=True)
+    ], check=True, env=env)
 
 
 def download_gpu_model(ctx: InstallContext) -> None:
@@ -376,13 +393,14 @@ def download_gpu_model(ctx: InstallContext) -> None:
     if GGML_MODEL_PATH.is_file() and GGML_MODEL_PATH.stat().st_size >= 700_000_000:
         print(f"  (model already present at {GGML_MODEL_PATH}, skipping download)")
         return
+    py, env = _hf_download_env(ctx)
     subprocess.run([
-        str(ctx.python_bin), "-u", "-c",
+        py, "-u", "-c",
         f"from huggingface_hub import hf_hub_download; "
         f"hf_hub_download(repo_id={GGML_MODEL_HF_REPO!r}, "
         f"filename={GGML_MODEL_FILENAME!r}, "
         f"local_dir={str(GGML_MODEL_PATH.parent)!r})",
-    ], check=True)
+    ], check=True, env=env)
 
 
 def next_preload_engines(current: str, engine_id: str) -> str | None:
@@ -591,13 +609,19 @@ def _write_backend_dropin(ctx: InstallContext) -> None:
     overrides ExecStart with the explicit gpu/cpu chosen here, so a packaged
     install runs exactly one backend -- never auto/both, no runtime fallback.
     """
-    flag = "gpu" if ctx.gpu else "cpu"
+    if ctx.gpu:
+        exec_args = "--backend gpu"
+    else:
+        # The packaged daemon's default CT2 model_dir is PROJECT_ROOT-relative
+        # (site-packages), not the runtime dir where install.py downloads it,
+        # so packaged CPU mode must be pointed at the model explicitly.
+        exec_args = f"--backend cpu --model-dir {ctx.runtime_dir / DEFAULT_MODEL_NAME}"
     dropin = ctx.home / ".config/systemd/user" / f"{SERVICE_NAME}.d" / "10-backend.conf"
     write_home_file(
         ctx, dropin,
         "[Service]\n"
         "ExecStart=\n"
-        f"ExecStart=/usr/bin/kdictate-daemon --backend {flag}\n",
+        f"ExecStart=/usr/bin/kdictate-daemon {exec_args}\n",
     )
 
 
@@ -672,6 +696,12 @@ def main() -> int:
         _write_backend_dropin(ctx)
         step_done(f"--backend {'gpu' if gpu else 'cpu'}")
     else:
+        # A prior packaged/configurator run leaves a backend drop-in that would
+        # override this venv-backed unit; clear it before writing the source one.
+        dropin_dir = ctx.home / ".config/systemd/user" / f"{SERVICE_NAME}.d"
+        if dropin_dir.exists():
+            shutil.rmtree(dropin_dir, ignore_errors=True)
+
         step("Installing systemd user service")
         install_rendered_file(ctx, pkg / "kdictate-systemd.service",
                               ctx.home / ".config/systemd/user" / SERVICE_NAME)
