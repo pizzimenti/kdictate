@@ -559,6 +559,14 @@ def refresh_ibus_registry(ctx: InstallContext) -> None:
 
 def reload_systemd_user(ctx: InstallContext) -> None:
     run_command(["systemctl", "--user", "daemon-reload"], quiet=True)
+    # The unit's [Install] target moved from default.target to
+    # graphical-session.target (so the daemon inherits WAYLAND_DISPLAY).
+    # "enable" only adds the symlink for the *current* [Install] section; it
+    # does not remove one an earlier version installed elsewhere. Without an
+    # explicit disable first, an upgraded install keeps its old
+    # default.target.wants symlink and still starts too early.
+    run_command(["systemctl", "--user", "disable", SERVICE_NAME],
+                quiet=True, check=False)
     run_command(["systemctl", "--user", "enable", SERVICE_NAME], quiet=True)
     run_command(["systemctl", "--user", "restart", SERVICE_NAME], quiet=True)
 

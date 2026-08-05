@@ -35,6 +35,24 @@ from kdictate.runtime import RuntimePaths, write_last_text, write_state
 from kdictate.runtime_profile import resolve_runtime, set_thread_env
 
 
+# How long to wait for ``notify-send --print-id`` to report the id of the
+# banner it just posted. The id arrives as soon as the server answers the
+# Notify call, so this only has to cover a briefly busy notification daemon;
+# missing it costs us the ability to retract the banner early, not the prompt
+# itself.
+NOTIFICATION_ID_TIMEOUT_S: float = 1.0
+NOTIFICATION_ID_POLL_S: float = 0.02
+
+# Cadence for noticing that the user answered the prompt by simply toggling
+# recording off. 100ms is imperceptible next to a 10s decision window and
+# keeps the idle cost of the poll loop negligible.
+SESSION_PROMPT_POLL_S: float = 0.1
+
+# CloseNotification is a single round-trip to an already-running service; a
+# short bound keeps a wedged notification daemon from holding the session.
+NOTIFICATION_CLOSE_TIMEOUT_S: float = 2.0
+
+
 class DaemonEventSink(Protocol):
     """Observer interface used to publish daemon events to a transport layer."""
 
@@ -366,12 +384,43 @@ class DictationDaemon:
         self._session_prompt_thread = thread
         thread.start()
 
+    def _is_recording(self) -> bool:
+        """True while a recording session is live."""
+
+        with self._lock:
+            return self._state == STATE_RECORDING
+
     def _prompt_session_continuation(self, timeout_s: float) -> bool:
         """Default notify-send shell-out for the session-limit confirmation.
 
         Returns True iff the user clicked the Continue action within
         ``timeout_s`` seconds. Returns False on timeout, dismissal, or
         when notify-send is unavailable.
+
+        Notification lifetime
+        ---------------------
+        The banner asserts a live state — "still recording", "stopping in
+        Ns" — so it must not outlive the window it describes. It is retracted
+        on every exit path: the user pressed Continue, the window elapsed and
+        recording stopped, or the user pre-empted the whole question by
+        toggling recording off themselves. A banner that survives its own
+        deadline is worse than no banner, because its Continue button no
+        longer does anything.
+
+        Two reasons the notification server will not handle that for us:
+
+          - ``--urgency=critical`` is defined by the freedesktop spec as
+            never auto-expiring, and Plasma honors that by ignoring
+            ``--expire-time`` outright. Urgency is therefore ``normal``, with
+            the expire time kept as a backstop for the case where our own
+            close call cannot be made (no ``gdbus``, unknown id).
+          - Killing ``notify-send`` does not retract a banner the server has
+            already accepted. It only drops the actions along with their
+            sender, which is what turns the stale banner into a dead one.
+
+        Retracting needs the id, so ``--print-id`` is passed and the first
+        stdout line read back. libnotify flushes it as soon as the server
+        answers the Notify call, well before ``--wait`` returns.
         """
 
         notify_send = shutil.which("notify-send")
@@ -387,9 +436,10 @@ class DictationDaemon:
                     notify_send,
                     "--app-name=KDictate",
                     "--icon=audio-input-microphone",
-                    "--urgency=critical",
+                    "--urgency=normal",
                     f"--expire-time={expire_ms}",
                     "--action=continue=Continue",
+                    "--print-id",
                     "--wait",
                     "KDictate still recording",
                     f"Stopping in {int(timeout_s)}s — click Continue to keep going.",
@@ -400,16 +450,119 @@ class DictationDaemon:
         except OSError:
             self._logger.exception("failed to spawn notify-send for session prompt")
             return False
-        try:
-            stdout, _ = proc.communicate(timeout=timeout_s + 2.0)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+
+        # One thread owns the pipe for the life of the call. The waiter below
+        # only ever inspects the list it fills, so there is no second reader
+        # to race with it for the id line.
+        stdout_lines: list[bytes] = []
+
+        def _drain() -> None:
+            stream = proc.stdout
+            if stream is None:
+                return
             try:
-                proc.communicate(timeout=1.0)
+                for line in stream:
+                    stdout_lines.append(line.strip())
+            except (OSError, ValueError):
+                pass
+
+        reader = threading.Thread(
+            target=_drain,
+            name="kdictate-session-prompt-io",
+            daemon=True,
+        )
+        reader.start()
+
+        notification_id = self._await_notification_id(stdout_lines)
+        try:
+            self._wait_for_session_answer(proc, timeout_s)
+        finally:
+            self._close_notification(notification_id)
+
+        reader.join(timeout=NOTIFICATION_ID_TIMEOUT_S)
+        # The id line is consumed here rather than in the parser so a build of
+        # notify-send that batches both lines together still resolves cleanly.
+        answers = [line for line in stdout_lines if line != str(notification_id).encode()]
+        return b"continue" in answers
+
+    def _await_notification_id(self, stdout_lines: list[bytes]) -> int | None:
+        """Return the id ``notify-send --print-id`` reported, if it arrives."""
+
+        deadline = time.monotonic() + NOTIFICATION_ID_TIMEOUT_S
+        while time.monotonic() < deadline:
+            if stdout_lines:
+                try:
+                    return int(stdout_lines[0])
+                except ValueError:
+                    self._logger.warning(
+                        "unexpected notify-send --print-id output: %r",
+                        stdout_lines[0],
+                    )
+                    return None
+            time.sleep(NOTIFICATION_ID_POLL_S)
+        self._logger.warning("notify-send did not report a notification id")
+        return None
+
+    def _wait_for_session_answer(
+        self, proc: subprocess.Popen[bytes], timeout_s: float,
+    ) -> None:
+        """Block until the prompt is answered, pre-empted, or times out.
+
+        Polling rather than a single ``wait(timeout_s)`` so that a user who
+        answers the question by just stopping the recording is noticed
+        immediately — otherwise the banner would linger, still claiming to be
+        recording, until the original deadline expired.
+        """
+
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            try:
+                proc.wait(timeout=SESSION_PROMPT_POLL_S)
+                return
             except subprocess.TimeoutExpired:
                 pass
-            return False
-        return stdout.strip() == b"continue"
+            if not self._is_recording():
+                self._logger.info("session prompt pre-empted by toggle-off")
+                break
+
+        proc.kill()
+        try:
+            proc.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            pass
+
+    def _close_notification(self, notification_id: int | None) -> None:
+        """Retract a notification we posted. Best-effort and never raises.
+
+        Closing an id the server has already expired is a documented no-op,
+        so this is safe on the path where the user answered normally.
+        """
+
+        if notification_id is None:
+            return
+        gdbus = shutil.which("gdbus")
+        if gdbus is None:
+            self._logger.warning(
+                "gdbus not on PATH; cannot retract notification %d", notification_id
+            )
+            return
+        try:
+            subprocess.run(
+                [
+                    gdbus, "call", "--session",
+                    "--dest", "org.freedesktop.Notifications",
+                    "--object-path", "/org/freedesktop/Notifications",
+                    "--method", "org.freedesktop.Notifications.CloseNotification",
+                    str(notification_id),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=NOTIFICATION_CLOSE_TIMEOUT_S,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            self._logger.warning(
+                "failed to retract notification %d: %s", notification_id, exc
+            )
 
     def _reset_session_buffers(self) -> None:
         """Clear transient queues and accumulated transcript fragments."""
@@ -551,6 +704,7 @@ class DictationDaemon:
                 sample_rate=self.config.sample_rate,
                 block_ms=self.config.block_ms,
                 energy_threshold=self.config.energy_threshold,
+                noise_floor_margin=self.config.noise_floor_margin,
                 silence_ms=self.config.silence_ms,
                 min_speech_ms=self.config.min_speech_ms,
                 start_speech_ms=self.config.start_speech_ms,

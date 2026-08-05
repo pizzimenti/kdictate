@@ -110,10 +110,13 @@ def _make_config(runtime_paths: RuntimePaths) -> DictationConfig:
         compute_type="int8",
         block_ms=30,
         energy_threshold=600.0,
+        noise_floor_margin=1.6,
         silence_ms=220,
         min_speech_ms=180,
         start_speech_ms=90,
         max_utterance_s=2.5,
+        session_max_recording_s=30.0,
+        session_confirm_timeout_s=10.0,
         backend="cpu",
         runtime_paths=runtime_paths,
     )

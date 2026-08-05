@@ -145,17 +145,43 @@ def transcribe_pcm(
     return postprocess_transcript(text)
 
 
+# How fast the noise-floor estimate is allowed to climb, per block, when the
+# room gets louder. Deliberately sluggish (~1.5s time constant at 30ms
+# blocks): the floor must not chase speech, and it only ever updates outside
+# an utterance anyway. Falling is instantaneous by contrast -- a quieter block
+# *is* the new floor, and erring quiet only makes the VAD more sensitive.
+NOISE_FLOOR_RISE_ALPHA: float = 0.02
+
+
 @dataclass
 class VADConfig:
-    """Parameters for the energy-based VAD segmenter."""
+    """Parameters for the energy-based VAD segmenter.
+
+    ``energy_threshold`` is a *floor*, not the whole gate. A fixed absolute
+    RMS cannot separate speech from silence when the input gain is not fixed
+    either -- and the daemon itself forces the mic to 91% on every activation
+    (see ``core.audio.ACTIVATION_MIC_VOLUME_PERCENT``). Ambient room noise at
+    that gain measures an RMS of 2000-4000, several times the configured
+    threshold, so every block scores as voiced: ``in_speech`` never ends, no
+    silence gap is ever detected, and every utterance is a ``max_utterance_s``
+    force-commit chopped mid-word. Whisper then hallucinates over the
+    noise-only fragments, which is what the HALLUCINATION_PHRASES filter above
+    exists to mop up.
+
+    So the effective threshold is ``max(energy_threshold, noise_floor *
+    noise_floor_margin)``, where the noise floor is measured continuously from
+    the audio itself. ``noise_floor_margin`` of 0 disables the adaptive half
+    and restores the pure fixed-threshold behavior.
+    """
 
     sample_rate: int = 16000
     block_ms: int = 30
-    energy_threshold: float = 700.0
+    energy_threshold: float = 1000.0
     silence_ms: int = 600
     min_speech_ms: int = 120
     start_speech_ms: int = 90
     max_utterance_s: float = 10.0
+    noise_floor_margin: float = 1.6
 
     @property
     def silence_blocks(self) -> int:
@@ -208,10 +234,11 @@ class VADSegmenter:
         max_utterance_blocks = cfg.max_utterance_blocks
 
         logger.info(
-            "vad config: energy_threshold=%.0f, start_speech_blocks=%d, "
-            "min_speech_blocks=%d, silence_blocks=%d, sample_rate=%d, block_ms=%.0f",
-            cfg.energy_threshold, start_speech_blocks, min_speech_blocks,
-            silence_blocks, cfg.sample_rate, cfg.block_ms,
+            "vad config: energy_threshold=%.0f, noise_floor_margin=%.2f, "
+            "start_speech_blocks=%d, min_speech_blocks=%d, silence_blocks=%d, "
+            "sample_rate=%d, block_ms=%.0f",
+            cfg.energy_threshold, cfg.noise_floor_margin, start_speech_blocks,
+            min_speech_blocks, silence_blocks, cfg.sample_rate, cfg.block_ms,
         )
         session_start = time.monotonic()
         total_blocks = 0
@@ -219,6 +246,12 @@ class VADSegmenter:
         commits = 0
         peak_rms_overall = 0.0
         peak_rms_below_thresh = 0.0
+
+        # Seeded from the first block rather than from a guess, so the very
+        # first utterance is gated on a real measurement of this microphone in
+        # this room instead of on a constant that was tuned against neither.
+        noise_floor: float | None = None
+        threshold = cfg.energy_threshold
 
         utterance_pcm: list[Any] = []
         pending_speech_pcm: list[Any] = []
@@ -263,7 +296,24 @@ class VADSegmenter:
                     continue
 
                 rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
-                voiced = rms >= cfg.energy_threshold
+
+                # The floor is only updated between utterances. Letting it
+                # track during speech would walk it up toward the speaker's
+                # own level, raising the threshold above the voice it is
+                # supposed to be detecting and cutting the utterance short.
+                if noise_floor is None:
+                    noise_floor = rms
+                elif not in_speech:
+                    if rms < noise_floor:
+                        noise_floor = rms
+                    else:
+                        noise_floor += NOISE_FLOOR_RISE_ALPHA * (rms - noise_floor)
+                if cfg.noise_floor_margin > 0:
+                    threshold = max(
+                        cfg.energy_threshold, noise_floor * cfg.noise_floor_margin
+                    )
+
+                voiced = rms >= threshold
 
                 total_blocks += 1
                 if rms > peak_rms_overall:
@@ -313,15 +363,23 @@ class VADSegmenter:
                 commit()
         finally:
             # Single-line per-session summary so a silent recording is
-            # diagnosable from the log alone: peak_rms vs. energy_threshold
-            # tells you whether the mic gain is the issue, voiced_blocks vs.
-            # commits tells you whether VAD heuristics rejected real speech.
+            # diagnosable from the log alone: peak_rms vs. the threshold tells
+            # you whether the mic gain is the issue, voiced_blocks vs. commits
+            # tells you whether VAD heuristics rejected real speech.
+            #
+            # noise_floor and the *effective* threshold are reported (not just
+            # the configured one) because they are what noise_floor_margin has
+            # to be tuned against: a threshold pinned at energy_threshold means
+            # the margin is doing nothing, and voiced_blocks ~= blocks with few
+            # commits means it is still too low to find a silence gap.
             elapsed = time.monotonic() - session_start
             logger.info(
                 "recording ended: %.1fs, %d blocks, %d voiced (>=%.0f), "
-                "%d committed, peak_rms=%.0f, peak_below_thresh=%.0f",
-                elapsed, total_blocks, voiced_blocks, cfg.energy_threshold,
+                "%d committed, peak_rms=%.0f, peak_below_thresh=%.0f, "
+                "noise_floor=%.0f",
+                elapsed, total_blocks, voiced_blocks, threshold,
                 commits, peak_rms_overall, peak_rms_below_thresh,
+                noise_floor if noise_floor is not None else -1.0,
             )
 
             # Always post the stop sentinel — even if the loop above raised
