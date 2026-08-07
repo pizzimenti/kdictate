@@ -15,7 +15,7 @@
 # so one package, compiled once, runs across Ryzen Zen 2 -> Zen 5.
 
 pkgname=kdictate
-pkgver=0.13.0
+pkgver=0.14.0
 pkgrel=1
 
 # The ONLY knob controlling the GPU transcription stack. Bump it
