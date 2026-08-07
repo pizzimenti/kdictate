@@ -20,7 +20,12 @@ def daemon_arg_defaults() -> dict[str, object]:
         "cpu_threads": recommended_shortform_cpu_threads(),
         "compute_type": "int8",
         "block_ms": 30,
+        # Kept at the 700.0 v0.13.0 chose for weak/quiet digital microphones,
+        # whose speech falls below the older 1000. Raising it back would lock
+        # those microphones out again, and it is no longer the knob that
+        # handles noisy rooms -- noise_floor_margin is.
         "energy_threshold": 700.0,
+        "noise_floor_margin": 1.6,
         "silence_ms": 600,
         "min_speech_ms": 120,
         "start_speech_ms": 90,

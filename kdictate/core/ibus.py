@@ -30,6 +30,7 @@ control loop.
 from __future__ import annotations
 
 import logging
+import os
 import subprocess
 from typing import Final
 
@@ -40,6 +41,35 @@ from kdictate.constants import DBUS_INTERFACE
 # wedged ``ibus-daemon`` rather than to allow a slow happy path.
 DEFAULT_IBUS_TIMEOUT_S: Final[float] = 2.0
 
+# The ``ibus`` CLI locates its bus socket by display name, not by D-Bus:
+# ``~/.config/ibus/bus/<machine-id>-unix-wayland-0`` on Wayland versus
+# ``…-unix-0`` on X11. With WAYLAND_DISPLAY unset it silently falls back to
+# the X11 name and reads a stale socket file left over from an earlier
+# session, so every invocation dies with::
+#
+#     ibus_bus_get_global_engine: assertion 'IBUS_IS_BUS (bus)' failed
+#     No engine is set.
+#
+# which this module then reports as "failed to switch active IBus engine".
+# DBUS_SESSION_BUS_ADDRESS being correct is *not* sufficient — the socket
+# path is chosen before D-Bus is ever consulted.
+#
+# The daemon lands in that state whenever it starts before the session
+# manager exports the display variables into the systemd user environment,
+# which is what ``WantedBy=default.target`` does at login.
+#
+# This is repaired here rather than in the unit. Binding the unit to
+# graphical-session.target would fix the ordering for sessions that activate
+# that target and silently stop the daemon autostarting for every session
+# that does not (Plasma with systemd startup disabled, plain WMs started from
+# a display manager or startx). Resolving the variables at call time instead
+# covers every start path — including D-Bus activation and a daemon that
+# outlives an ibus-daemon restart — without making autostart conditional.
+#
+# WAYLAND_DISPLAY leads because on a Wayland session DISPLAY alone does not
+# help: ibus still computes the wayland socket name and ignores it.
+_DISPLAY_ENV_KEYS: Final[tuple[str, ...]] = ("WAYLAND_DISPLAY", "DISPLAY")
+
 # Aliased to DBUS_INTERFACE because the IBus engine name and the daemon's
 # D-Bus interface name are the same string by construction (see
 # ibus_engine/engine.py: ``ENGINE_NAME = DBUS_INTERFACE``). Re-export under
@@ -49,6 +79,111 @@ KDICTATE_ENGINE_NAME: Final[str] = DBUS_INTERFACE
 
 _LOGGER = logging.getLogger(__name__)
 
+# Resolved once per process: the display name cannot change under a running
+# session, and re-querying systemd on every session-start would put a second
+# subprocess on the hot path. ``ensure_active_engine`` drops the cache when a
+# query fails so a daemon that started against a since-replaced session can
+# still recover without a restart.
+_display_env_cache: dict[str, str] | None = None
+
+# Set by :func:`_reset_display_env_cache` to mark the *next* resolve as a heal
+# attempt. On a heal, systemd overrides the process environment instead of
+# merely filling gaps in it -- see :func:`_display_env` for why the normal
+# precedence is wrong in exactly that case.
+_display_env_prefer_systemd: bool = False
+
+
+def _display_env_from_systemd() -> dict[str, str]:
+    """Read the display variables back from the systemd user manager.
+
+    ``systemctl --user show-environment`` is the authoritative record of what
+    the session manager exported once the graphical session came up, which is
+    exactly the state a too-early daemon start missed. Best-effort like every
+    other helper here: an empty dict just means we fall through to whatever
+    the process environment already had.
+    """
+
+    try:
+        result = subprocess.run(
+            ["systemctl", "--user", "show-environment"],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=DEFAULT_IBUS_TIMEOUT_S,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _LOGGER.warning("systemctl --user show-environment failed: %s", exc)
+        return {}
+    if result.returncode != 0:
+        _LOGGER.warning(
+            "systemctl --user show-environment exited %d: %s",
+            result.returncode, result.stderr.strip(),
+        )
+        return {}
+
+    found: dict[str, str] = {}
+    for line in result.stdout.splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key in _DISPLAY_ENV_KEYS:
+            # systemd shell-quotes values that need it; display names never
+            # do, so stripping a symmetric quote pair is enough here.
+            found[key] = value.strip().strip("'\"")
+    return found
+
+
+def _display_env() -> dict[str, str]:
+    """Return the display variables to hand the ``ibus`` CLI.
+
+    Normal precedence is process environment first: if we were started with a
+    display, we belong to the session that owns it, and systemd is consulted
+    only to fill in a missing WAYLAND_DISPLAY — the one variable whose absence
+    breaks socket resolution outright.
+
+    That precedence inverts on a heal. A daemon that outlived its session
+    still *has* a WAYLAND_DISPLAY in ``os.environ``; it is simply pointing at
+    a compositor that is gone. Re-resolving with the normal precedence would
+    keep picking that stale value out of the environment and never ask
+    systemd, so the retry could never converge on the live display. After
+    :func:`_reset_display_env_cache` the systemd answer therefore wins
+    outright.
+    """
+
+    global _display_env_cache, _display_env_prefer_systemd
+    if _display_env_cache is not None:
+        return _display_env_cache
+
+    prefer_systemd = _display_env_prefer_systemd
+    _display_env_prefer_systemd = False
+
+    resolved = {
+        key: os.environ[key] for key in _DISPLAY_ENV_KEYS if os.environ.get(key)
+    }
+    if prefer_systemd or "WAYLAND_DISPLAY" not in resolved:
+        from_systemd = _display_env_from_systemd()
+        if prefer_systemd:
+            resolved.update(from_systemd)
+        else:
+            for key, value in from_systemd.items():
+                resolved.setdefault(key, value)
+        if resolved:
+            _LOGGER.info("resolved display env for ibus: %s", sorted(resolved))
+    _display_env_cache = resolved
+    return resolved
+
+
+def _reset_display_env_cache(*, prefer_systemd: bool = False) -> None:
+    """Drop the cached display env so the next call re-resolves.
+
+    ``prefer_systemd`` marks the re-resolve as a *heal*: systemd's answer
+    overrides the process environment rather than merely filling gaps in it.
+    Plain clearing (the default) is what a caller wants when it just needs
+    fresh state and the environment is still trustworthy.
+    """
+
+    global _display_env_cache, _display_env_prefer_systemd
+    _display_env_cache = None
+    _display_env_prefer_systemd = prefer_systemd
+
 
 def _run_ibus(*args: str) -> subprocess.CompletedProcess[str]:
     """Run the ``ibus`` CLI with UTF-8 decoding and the module timeout.
@@ -57,6 +192,11 @@ def _run_ibus(*args: str) -> subprocess.CompletedProcess[str]:
     names are ASCII today but the locale of the invoking shell is not
     guaranteed, and a UnicodeDecodeError here would otherwise crash the
     helper instead of degrading to a logged warning.
+
+    The environment is the inherited one plus any display variables we had
+    to recover (see :data:`_DISPLAY_ENV_KEYS`); passing a full env rather
+    than only the overrides keeps DBUS_SESSION_BUS_ADDRESS and friends
+    intact.
     """
 
     return subprocess.run(
@@ -65,6 +205,7 @@ def _run_ibus(*args: str) -> subprocess.CompletedProcess[str]:
         encoding="utf-8",
         errors="replace",
         timeout=DEFAULT_IBUS_TIMEOUT_S,
+        env={**os.environ, **_display_env()},
     )
 
 
@@ -146,6 +287,13 @@ def ensure_active_engine(engine_name: str = KDICTATE_ENGINE_NAME) -> bool:
     """
 
     current = _read_active_engine()
+    if current is None:
+        # Either ibus-daemon is genuinely unreachable or our cached display
+        # env points at a session that has since been replaced. Re-resolving
+        # costs one subprocess on an already-failing path and turns the
+        # second case from "silently types nothing forever" into a heal.
+        _reset_display_env_cache(prefer_systemd=True)
+        current = _read_active_engine()
     if current == engine_name:
         return True
 
