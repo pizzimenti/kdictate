@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import subprocess
 import unittest
 from pathlib import Path
@@ -159,3 +160,39 @@ class PromptUpdateTests(unittest.TestCase):
     def test_fresh_install_proceeds_without_prompting(self) -> None:
         with mock.patch("builtins.input", side_effect=AssertionError("prompted")):
             self.assertTrue(install._prompt_update(None))
+
+
+class QuietFailureTests(unittest.TestCase):
+    """Suppressed output is only safe if failures still say what went wrong."""
+
+    def test_failure_surfaces_the_tail_of_the_captured_output(self) -> None:
+        result = subprocess.CompletedProcess(
+            args=["makepkg"],
+            returncode=2,
+            stdout="\n".join(f"line {n}" for n in range(1, 41)),
+            stderr="ERROR: the actual cause",
+        )
+        with self.assertRaises(SystemExit):
+            with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                install._die_with_output("Package build failed", result, tail=5)
+        printed = err.getvalue()
+        self.assertIn("Package build failed", printed)
+        self.assertIn("exit 2", printed)
+        self.assertIn("ERROR: the actual cause", printed)
+        # Tail only -- the whole log would defeat the point of running quiet.
+        self.assertNotIn("line 1\n", printed)
+
+    def test_missing_build_dependencies_name_the_packages_and_the_command(self) -> None:
+        failed = subprocess.CompletedProcess(args=["python"], returncode=1, stdout="", stderr="")
+        with mock.patch.object(install, "run_command", return_value=failed):
+            with self.assertRaises(SystemExit):
+                with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                    install._require_build_dependencies()
+        printed = err.getvalue()
+        self.assertIn("python-build", printed)
+        self.assertIn("python-installer", printed)
+
+    def test_present_build_dependencies_do_not_raise(self) -> None:
+        ok = subprocess.CompletedProcess(args=["python"], returncode=0, stdout="", stderr="")
+        with mock.patch.object(install, "run_command", return_value=ok):
+            install._require_build_dependencies()

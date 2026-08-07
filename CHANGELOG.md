@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.14.1
+
+### Fixed
+
+- **The installer is quiet again.** 0.14.0 added the package rebuild without
+  suppressing its output, making it the only one of 18 subprocess calls in
+  `install.py` that wasn't quiet — so a rebuild dumped the whole wheel build,
+  pip vendoring, and cmake log over the one-screen checklist. Both the build
+  and the install now run quiet like every other step, and print the tail of
+  the captured output only when they fail, so a real build error is still
+  readable without the successful path being a wall of text.
+- **No more sudo/pacman prompts in the middle of a step.** Dropped
+  `makepkg --syncdeps`, which would start a package transaction inside a step
+  whose output was suppressed. Missing build dependencies are now detected up
+  front and reported with the exact command to install them, before anything
+  is built or changed. `sudo` credentials are likewise requested visibly
+  before the install step rather than from inside it.
+- Removed the `SetuptoolsDeprecationWarning` at its source: `pyproject.toml`
+  declares `license = "MIT"` as an SPDX string rather than a TOML table.
+
 ## 0.14.0
 
 ### Fixed

@@ -634,6 +634,50 @@ def _prompt_update(installed: str | None) -> bool:
             return False
 
 
+def _die_with_output(
+    message: str, result: subprocess.CompletedProcess[str], tail: int = 25,
+) -> NoReturn:
+    """Fail with the tail of a suppressed command's output.
+
+    Every step here runs quiet, which is only safe if a failure still hands
+    back something actionable. Printing the tail rather than the whole log
+    keeps the successful path to one screen without turning a real build
+    error into "it failed, go find out why yourself".
+    """
+
+    combined = (result.stdout or "") + (result.stderr or "")
+    lines = [line for line in combined.splitlines() if line.strip()]
+    shown = "\n".join(f"      {line}" for line in lines[-tail:]) or "      (no output)"
+    die(f"{message} (exit {result.returncode}). Last {min(tail, len(lines))} lines:\n\n{shown}")
+
+
+def _require_build_dependencies() -> None:
+    """Stop before a long build if makepkg's Python deps are missing.
+
+    Deliberately *not* ``makepkg --syncdeps``: that hands the terminal to a
+    sudo password prompt and a pacman transaction in the middle of a step
+    whose output is suppressed, which is both startling and unreadable. A
+    missing dependency is a one-line fix the user should be told about up
+    front, before anything has been built or changed.
+    """
+
+    distro = _detect_distro()
+    missing = [
+        package
+        for module, package in (("build", "python-build"), ("installer", "python-installer"))
+        if run_command(
+            [sys.executable, "-c", f"import {module}"], quiet=True, check=False,
+        ).returncode != 0
+    ]
+    if missing:
+        die(
+            "Missing build dependencies for the package rebuild:\n\n"
+            + "".join(f"        {package}\n" for package in missing)
+            + f"\n      Install:  {_pkg_hint(distro, ' '.join(missing))}\n\n"
+            "      Then re-run this installer."
+        )
+
+
 def rebuild_and_install_package(ctx: InstallContext) -> None:
     """Rebuild the package from this tree and install it.
 
@@ -644,17 +688,20 @@ def rebuild_and_install_package(ctx: InstallContext) -> None:
     service on whatever the package already contained, and report success
     while the fix the user came here for was never deployed.
 
-    ``--syncdeps`` lets makepkg pull its own missing build dependencies
-    (python-build and python-installer are easy to be without), and pacman is
-    given the package explicitly rather than by glob-of-latest so a stale
-    build from an earlier version can never be installed by accident.
+    Both commands run quiet, like every other step, with their output
+    surfaced only if they fail. pacman is given the built package explicitly
+    rather than by glob-of-latest, so a stale build from an earlier version
+    can never be installed by accident.
     """
 
     for tool in ("makepkg", "pacman", "sudo"):
         require_command(tool)
+    _require_build_dependencies()
 
     pkg_dir = ctx.script_dir / "packaging"
-    run_command(["makepkg", "--force", "--syncdeps"], cwd=pkg_dir)
+    result = run_command(["makepkg", "--force"], cwd=pkg_dir, quiet=True, check=False)
+    if result.returncode != 0:
+        _die_with_output("Package build failed", result)
 
     built = sorted(
         pkg_dir.glob(f"{PACKAGE_NAME}-{__version__}-*.pkg.tar.*"),
@@ -668,9 +715,18 @@ def rebuild_and_install_package(ctx: InstallContext) -> None:
             f"kdictate.__version__ ({__version__})."
         )
 
-    # Already confirmed at the update prompt; --noconfirm avoids asking the
-    # same question twice. sudo still prompts for the password itself.
-    run_command(["sudo", "pacman", "-U", "--noconfirm", built[-1]])
+    # Ask for credentials up front and visibly. Left to the pacman call
+    # below, the password prompt would appear inside a suppressed step with
+    # no indication of what was waiting on it.
+    if run_command(["sudo", "-v"], check=False).returncode != 0:
+        die("sudo authentication failed; the new package was built but not installed.")
+
+    # Already confirmed at the update prompt; --noconfirm avoids asking twice.
+    result = run_command(
+        ["sudo", "pacman", "-U", "--noconfirm", built[-1]], quiet=True, check=False,
+    )
+    if result.returncode != 0:
+        _die_with_output(f"Installing {built[-1].name} failed", result)
 
 
 def _cleanup_shadowing_user_setup(ctx: InstallContext) -> None:
@@ -781,10 +837,10 @@ def main() -> int:
     pkg = ctx.script_dir / "packaging"
 
     if packaged:
-        # First, and not quietly: this is the step that actually moves code
-        # onto the system, and it is the long one (whisper.cpp + Vulkan).
-        step("Rebuilding system package")
-        print()
+        # The step that actually moves code onto the system, and the long one
+        # (whisper.cpp + Vulkan). Signposted in the label because it runs
+        # quiet like the rest, so there is nothing else to watch.
+        step("Rebuilding system package (several minutes)")
         rebuild_and_install_package(ctx)
         step_done(f"{PACKAGE_NAME} {__version__}")
 
