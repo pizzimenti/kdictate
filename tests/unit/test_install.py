@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import subprocess
 import unittest
+from pathlib import Path
+from unittest import mock
 
 import install
 from kdictate.constants import DBUS_INTERFACE
@@ -101,3 +104,58 @@ class InstallHelperTests(unittest.TestCase):
         self.assertIsNotNone(added)
         removed = install.previous_preload_engines(added, DBUS_INTERFACE)
         self.assertEqual(removed, original)
+
+
+def _completed(stdout: str = "", returncode: int = 0) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(
+        args=["pacman"], returncode=returncode, stdout=stdout, stderr="",
+    )
+
+
+def _ctx(runtime_dir: Path) -> install.InstallContext:
+    return install.InstallContext(
+        script_path=Path("/tmp/install.py"),
+        script_dir=Path("/tmp"),
+        home=Path("/tmp/home"),
+        runtime_dir=runtime_dir,
+    )
+
+
+class InstalledVersionTests(unittest.TestCase):
+    def test_packaged_version_comes_from_pacman_without_the_pkgrel(self) -> None:
+        # The pkgrel is not part of the project's version lockstep, so it has
+        # to be stripped or the comparison against __version__ never matches
+        # and an up-to-date system would reinstall on every run.
+        with mock.patch.object(
+            install, "run_command", return_value=_completed("kdictate 0.13.0-1\n")
+        ):
+            self.assertEqual(
+                install._installed_version(_ctx(Path("/nonexistent")), True), "0.13.0"
+            )
+
+    def test_packaged_version_is_none_when_the_package_is_absent(self) -> None:
+        with mock.patch.object(
+            install, "run_command", return_value=_completed("", returncode=1)
+        ):
+            self.assertIsNone(
+                install._installed_version(_ctx(Path("/nonexistent")), True)
+            )
+
+    def test_source_version_is_none_without_a_runtime_venv(self) -> None:
+        self.assertIsNone(
+            install._installed_version(_ctx(Path("/nonexistent")), False)
+        )
+
+
+class PromptUpdateTests(unittest.TestCase):
+    def test_empty_answer_defaults_to_updating(self) -> None:
+        with mock.patch("builtins.input", return_value=""):
+            self.assertTrue(install._prompt_update("0.13.0"))
+
+    def test_declining_returns_false(self) -> None:
+        with mock.patch("builtins.input", return_value="n"):
+            self.assertFalse(install._prompt_update("0.13.0"))
+
+    def test_fresh_install_proceeds_without_prompting(self) -> None:
+        with mock.patch("builtins.input", side_effect=AssertionError("prompted")):
+            self.assertTrue(install._prompt_update(None))

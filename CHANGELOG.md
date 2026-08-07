@@ -39,6 +39,17 @@
 
 ### Added
 
+- **`install.py` is version-aware and now actually updates a packaged
+  install.** It reports the installed version and this tree's version, exits
+  immediately when they match, and otherwise prompts before doing anything
+  else. On a packaged system it rebuilds the package from the tree and
+  installs it, because configurator mode deliberately never writes Python
+  code — previously the installer would wire up the KDE bits, restart the
+  daemon on whatever the package already contained, and report success while
+  the new code was never deployed. The installed version is read from
+  `pacman -Q` rather than from the installed module, since the 0.12.0 package
+  shipped a wheel whose `APP_VERSION` still read 0.11.1. The packaged step
+  counter also no longer stops at 8/11.
 - **`--noise-floor-margin`** — the speech gate now adapts to measured ambient
   noise instead of relying on a fixed threshold. The effective gate is
   `max(--energy-threshold, noise_floor * margin)`, clamped to 8x

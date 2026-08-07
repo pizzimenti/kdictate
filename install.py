@@ -39,6 +39,7 @@ from kdictate.app_metadata import (
 )
 from kdictate.constants import APP_ROOT_ID, DBUS_INTERFACE
 
+PACKAGE_NAME: Final[str] = "kdictate"
 SERVICE_NAME = f"{APP_ROOT_ID}.service"
 DBUS_SERVICE_NAME = f"{DBUS_INTERFACE}.service"
 IBUS_COMPONENT_NAME = f"{APP_ROOT_ID}.component.xml"
@@ -240,12 +241,14 @@ def run_command(
     env: Mapping[str, str] | None = None,
     quiet: bool = False, check: bool = True,
     timeout: float | None = None,
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess[str]:
     args = [str(p) for p in command]
     proc_env = {**os.environ, **(env or {})}
     return subprocess.run(
         args, check=check, encoding="utf-8", errors="replace",
         capture_output=quiet, env=proc_env, timeout=timeout,
+        cwd=None if cwd is None else str(cwd),
     )
 
 
@@ -579,6 +582,97 @@ def _is_packaged_install() -> bool:
     )
 
 
+def _installed_version(ctx: InstallContext, packaged: bool) -> str | None:
+    """Return the version currently installed, or None if there is none.
+
+    A packaged install is read from the package manager rather than by
+    importing the installed module: the 0.12.0 package shipped a wheel whose
+    ``APP_VERSION`` still read 0.11.1, so the installed code's own string is
+    not a reliable record of what was actually put on disk. ``pacman -Q`` is.
+    """
+
+    if packaged:
+        result = run_command(
+            ["pacman", "-Q", PACKAGE_NAME], quiet=True, check=False,
+        )
+        if result.returncode != 0:
+            return None
+        fields = result.stdout.split()
+        if len(fields) < 2:
+            return None
+        # "kdictate 0.13.0-1" -> "0.13.0"; the pkgrel is not part of our
+        # version lockstep and would never compare equal to __version__.
+        return fields[1].rsplit("-", 1)[0]
+
+    if not ctx.python_bin.exists():
+        return None
+    result = run_command(
+        [ctx.python_bin, "-c", "from kdictate import __version__; print(__version__)"],
+        quiet=True, check=False,
+    )
+    if result.returncode != 0:
+        return None
+    return result.stdout.strip() or None
+
+
+def _prompt_update(installed: str | None) -> bool:
+    """Show the version transition and confirm it. True means proceed."""
+
+    if installed is None:
+        print(f"  No existing install detected — installing {__version__}.\n")
+        return True
+
+    print(f"    Installed:  {installed}")
+    print(f"    This tree:  {__version__}\n")
+    while True:
+        choice = input(
+            f"  Update {installed} → {__version__}? [Y/n]: "
+        ).strip().lower()
+        if choice in ("", "y", "yes"):
+            return True
+        if choice in ("n", "no"):
+            return False
+
+
+def rebuild_and_install_package(ctx: InstallContext) -> None:
+    """Rebuild the package from this tree and install it.
+
+    Configurator mode deliberately never writes Python code — the package
+    owns ``/usr/lib/python3.*/site-packages/kdictate``. So on a packaged
+    system a rebuild is the *only* way this tree's code reaches the running
+    daemon; without it the installer would wire up the KDE bits, restart the
+    service on whatever the package already contained, and report success
+    while the fix the user came here for was never deployed.
+
+    ``--syncdeps`` lets makepkg pull its own missing build dependencies
+    (python-build and python-installer are easy to be without), and pacman is
+    given the package explicitly rather than by glob-of-latest so a stale
+    build from an earlier version can never be installed by accident.
+    """
+
+    for tool in ("makepkg", "pacman", "sudo"):
+        require_command(tool)
+
+    pkg_dir = ctx.script_dir / "packaging"
+    run_command(["makepkg", "--force", "--syncdeps"], cwd=pkg_dir)
+
+    built = sorted(
+        pkg_dir.glob(f"{PACKAGE_NAME}-{__version__}-*.pkg.tar.*"),
+        key=lambda path: path.stat().st_mtime,
+    )
+    if not built:
+        die(
+            f"makepkg finished but produced no {PACKAGE_NAME} {__version__} "
+            f"package in {pkg_dir}.\n\n"
+            "      Check that packaging/PKGBUILD's pkgver matches "
+            f"kdictate.__version__ ({__version__})."
+        )
+
+    # Already confirmed at the update prompt; --noconfirm avoids asking the
+    # same question twice. sudo still prompts for the password itself.
+    run_command(["sudo", "pacman", "-U", "--noconfirm", built[-1]])
+
+
 def _cleanup_shadowing_user_setup(ctx: InstallContext) -> None:
     """Remove per-user files that would shadow the system package.
 
@@ -647,6 +741,23 @@ def main() -> int:
 
     print(f"\n  KDictate {__version__} installer\n")
 
+    # Version gate first, before any other prompt: a system that is already
+    # current should cost one command and no questions.
+    packaged = _is_packaged_install()
+    installed = _installed_version(ctx, packaged)
+    if installed is not None and installed == __version__:
+        print(f"  Already at {__version__} — nothing to do.\n")
+        return 0
+    if not _prompt_update(installed):
+        print("\n  Cancelled — nothing was changed.\n")
+        return 0
+
+    # The two modes run different step sets; the count was previously
+    # hardcoded to the source-install total, so a packaged run counted up to
+    # 8/11 and stopped.
+    global _TOTAL_STEPS  # noqa: PLW0603
+    _TOTAL_STEPS = 9 if packaged else 11
+
     gpu = _prompt_backend()
     if gpu:
         ctx = InstallContext(
@@ -655,10 +766,10 @@ def main() -> int:
         )
 
     print()
-    packaged = _is_packaged_install()
     if packaged:
-        log("Packaged install detected — configuring the system package "
-            "(model + per-user KDE wiring + system service; no venv).")
+        log("Packaged install detected — rebuilding the system package from "
+            "this tree, then configuring it (model + per-user KDE wiring + "
+            "system service; no venv).")
 
     preflight_ibus()
     required = ["python3", "systemctl", "dconf"]
@@ -668,6 +779,14 @@ def main() -> int:
         require_command(cmd)
 
     pkg = ctx.script_dir / "packaging"
+
+    if packaged:
+        # First, and not quietly: this is the step that actually moves code
+        # onto the system, and it is the long one (whisper.cpp + Vulkan).
+        step("Rebuilding system package")
+        print()
+        rebuild_and_install_package(ctx)
+        step_done(f"{PACKAGE_NAME} {__version__}")
 
     if not packaged:
         step("Syncing runtime files")
