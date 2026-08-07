@@ -25,7 +25,15 @@ def daemon_arg_defaults() -> dict[str, object]:
         # those microphones out again, and it is no longer the knob that
         # handles noisy rooms -- noise_floor_margin is.
         "energy_threshold": 700.0,
-        "noise_floor_margin": 1.6,
+        # Adaptive gate OFF by default. On real hardware the trailing-window
+        # estimate tracked the speaker, not the room: a push-to-talk session
+        # is short and mostly speech, so the low percentile lands on quiet
+        # speech (~9000 RMS measured, against a ~11000-13000 speaking level)
+        # and the gate either rejects the voice or is clamped below the noise
+        # and passes everything. Until it can be tuned against real logs, the
+        # default is the fixed threshold that shipped before it. Set a margin
+        # (1.6 is a reasonable starting point) to opt in.
+        "noise_floor_margin": 0.0,
         "silence_ms": 600,
         "min_speech_ms": 120,
         "start_speech_ms": 90,

@@ -151,12 +151,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--noise-floor-margin",
         type=float,
         default=defaults["noise_floor_margin"],
-        help="How far above the measured ambient noise floor a block must "
-             "sit to count as speech. The effective threshold is "
-             "max(--energy-threshold, noise_floor * margin). Raise it if "
-             "utterances never end (every commit logs 'force-commit'); lower "
-             "it if quiet speech is being dropped. 0 disables the adaptive "
-             "threshold and uses --energy-threshold alone.",
+        help="How far above the measured ambient noise floor a block must sit "
+             "to count as speech. Defaults to 0 — the adaptive gate is OFF and "
+             "--energy-threshold is used alone. Set it (try 1.6) to opt in: "
+             "the gate becomes max(--energy-threshold, noise_floor * margin), "
+             "capped at 8x --energy-threshold. Tune against the 'recording "
+             "ended:' log line, which reports the measured noise_floor and the "
+             "rms range whether or not the gate is enabled: the margin only "
+             "helps if noise_floor sits well below your speaking level.",
     )
     parser.add_argument(
         "--silence-ms",

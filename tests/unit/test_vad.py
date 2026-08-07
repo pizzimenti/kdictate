@@ -19,6 +19,7 @@ from kdictate.audio_common import (
     VADConfig,
     VADSegmenter,
 )
+from kdictate.daemon_profiles import daemon_arg_defaults
 
 BLOCK_SAMPLES = 480  # 30ms at 16kHz
 
@@ -95,7 +96,7 @@ class NoisyRoomTest(unittest.TestCase):
         # ambient block scores as voiced, no silence gap is ever found, and
         # the utterance runs to max_utterance_s and is chopped mid-word.
         blocks = [_block(3000)] * 60 + [_block(12000)] * 100 + [_block(3000)] * 60
-        committed = _run_vad(blocks)
+        committed = _run_vad(blocks, noise_floor_margin=1.6)
 
         self.assertEqual(len(committed), 1)
         # Committed by the silence gap, well short of max_utterance_s.
@@ -127,9 +128,25 @@ class GateCeilingTest(unittest.TestCase):
         self.assertGreater(5000 * 1.6, energy_threshold * NOISE_FLOOR_MAX_MULTIPLE)
 
         blocks = [_block(5000)] * 60 + [_block(6000)] * 100 + [_block(5000)] * 60
-        committed = _run_vad(blocks, energy_threshold=energy_threshold)
+        committed = _run_vad(
+            blocks, energy_threshold=energy_threshold, noise_floor_margin=1.6,
+        )
 
         self.assertEqual(len(committed), 1)
+
+
+class AdaptiveGateDefaultTest(unittest.TestCase):
+    def test_adaptive_gate_is_off_unless_asked_for(self) -> None:
+        """The gate defaults to the fixed threshold.
+
+        Measured on real hardware the trailing-window estimate tracked the
+        speaker rather than the room, so the adaptive half is opt-in until it
+        can be tuned against real logs. Pinned here because the default is the
+        whole of the decision — the mechanism itself still works when asked.
+        """
+
+        self.assertEqual(VADConfig().noise_floor_margin, 0.0)
+        self.assertEqual(daemon_arg_defaults()["noise_floor_margin"], 0.0)
 
 
 class DegenerateBlockTest(unittest.TestCase):
@@ -149,7 +166,7 @@ class DegenerateBlockTest(unittest.TestCase):
             + [_block(3000)] * 40
         )
         with np.errstate(invalid="ignore"):
-            committed = _run_vad(blocks)
+            committed = _run_vad(blocks, noise_floor_margin=1.6)
 
         self.assertEqual(len(committed), 1)
         _pcm, seconds = committed[0]

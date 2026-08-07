@@ -202,14 +202,24 @@ class VADConfig:
     with the floor measured from the audio itself. Both bounds matter:
     ``energy_threshold`` keeps a quiet room from driving the gate below what a
     weak microphone can produce, and the ceiling keeps a loud room from
-    driving it above what the user's voice can produce. ``noise_floor_margin``
-    of 0 disables the adaptive middle entirely and restores pure
-    fixed-threshold behavior.
+    driving it above what the user's voice can produce.
+
+    **The adaptive half is off by default** (``noise_floor_margin`` of 0), and
+    the gate is then just ``energy_threshold``. Measured on real hardware, the
+    trailing-window estimate tracked the *speaker* rather than the room:
+    push-to-talk sessions are short and mostly speech, so the low percentile
+    settled on quiet speech (~9000 RMS against an ~11000-13000 speaking level)
+    with no silence in the window to anchor it. Both outcomes were bad — the
+    gate either landed above the voice and rejected the session, or was
+    clamped by the ceiling below the noise and passed every block, restoring
+    the very never-ending-utterance bug it was added to fix.
+
+    The floor is still measured and logged when the margin is 0, so the
+    ``recording ended:`` line carries the data needed to choose one. Set a
+    margin to opt in once it can be tuned against those logs.
 
     The default ``energy_threshold`` stays at the 700 that v0.13.0 chose for
-    weak/quiet digital microphones; the adaptive half is what handles noisy
-    rooms now, so there is no reason to raise the floor back and lock those
-    microphones out again.
+    weak/quiet digital microphones.
     """
 
     sample_rate: int = 16000
@@ -219,7 +229,7 @@ class VADConfig:
     min_speech_ms: int = 120
     start_speech_ms: int = 90
     max_utterance_s: float = 10.0
-    noise_floor_margin: float = 1.6
+    noise_floor_margin: float = 0.0
 
     @property
     def silence_blocks(self) -> int:
@@ -284,6 +294,11 @@ class VADSegmenter:
         commits = 0
         peak_rms_overall = 0.0
         peak_rms_below_thresh = 0.0
+        # The quietest block of the session. peak_below_gate goes to 0 the
+        # moment nothing falls under the gate, which is exactly the case
+        # where the gate is wrong and the number is needed most; this one is
+        # measured independently of it.
+        min_rms = float("inf")
 
         # Trailing history of block energies. The gate for each block is
         # derived from the blocks *before* it -- never from the block being
@@ -346,13 +361,23 @@ class VADSegmenter:
             pending_silence_pcm.clear()
 
         def current_gate() -> float:
-            """Recompute the gate from the noise history collected so far."""
+            """Recompute the gate from the noise history collected so far.
+
+            The floor is measured even when ``noise_floor_margin`` is 0 and it
+            cannot move the gate. That measurement is the only record of what
+            this microphone in this room actually does, and it is what the
+            margin has to be tuned against — a diagnostic that switches itself
+            off along with the feature is no use for turning the feature back
+            on.
+            """
 
             nonlocal noise_floor, threshold, threshold_min, threshold_max
-            if cfg.noise_floor_margin > 0 and noise_history:
-                noise_floor = float(
-                    np.percentile(noise_history, NOISE_FLOOR_PERCENTILE)
-                )
+            if not noise_history:
+                return threshold
+            noise_floor = float(
+                np.percentile(noise_history, NOISE_FLOOR_PERCENTILE)
+            )
+            if cfg.noise_floor_margin > 0:
                 threshold = min(
                     max(
                         cfg.energy_threshold,
@@ -371,10 +396,13 @@ class VADSegmenter:
             nonlocal peak_rms_below_thresh, in_speech, speech_block_count
             nonlocal pending_speech_block_count, trailing_silence_count
             nonlocal utterance_pcm, pending_speech_pcm, pending_silence_pcm
+            nonlocal min_rms
 
             total_blocks += 1
             if rms > peak_rms_overall:
                 peak_rms_overall = rms
+            if rms < min_rms:
+                min_rms = rms
             if voiced:
                 voiced_blocks += 1
             elif rms > peak_rms_below_thresh:
@@ -471,11 +499,12 @@ class VADSegmenter:
             elapsed = time.monotonic() - session_start
             logger.info(
                 "recording ended: %.1fs, %d blocks, %d voiced, %d committed, "
-                "peak_rms=%.0f, peak_below_gate=%.0f, gate=%.0f-%.0f, "
-                "noise_floor=%.0f",
+                "rms=%.0f-%.0f, peak_below_gate=%.0f, gate=%.0f-%.0f, "
+                "noise_floor=%.0f, margin=%.2f",
                 elapsed, total_blocks, voiced_blocks, commits,
-                peak_rms_overall, peak_rms_below_thresh,
-                threshold_min, threshold_max, noise_floor,
+                0.0 if min_rms == float("inf") else min_rms, peak_rms_overall,
+                peak_rms_below_thresh, threshold_min, threshold_max,
+                noise_floor, cfg.noise_floor_margin,
             )
 
             # A session that heard nothing is the one failure the summary

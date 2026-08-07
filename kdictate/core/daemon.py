@@ -152,11 +152,17 @@ class DictationDaemon:
         self._session_watchdog_lock = threading.Lock()
         self._session_watchdog_timer: threading.Timer | None = None
         self._session_prompt_thread: threading.Thread | None = None
-        # Incremented on every recording start. The session-limit prompt
-        # blocks for seconds and then acts on the result, by which time the
-        # session it was asked about may have ended and a different one begun;
-        # "are we recording?" cannot tell those apart, but this can.
-        self._session_generation = 0
+        # Incremented on every recording start, purely so the session-limit
+        # prompt can tell whether the recording it asked about is still the
+        # one running when it gets an answer.
+        #
+        # Deliberately NOT _session_generation: that is a different counter
+        # with different semantics (see below) which only moves when session
+        # primitives are rotated, and which decode workers treat as "this
+        # session is gone, discard your transcript". Bumping it per recording
+        # made every normal session look like a wedge recovery and silently
+        # dropped every transcript.
+        self._recording_epoch = 0
         self._lock = threading.RLock()
         self._recording = False
         self._starting = False
@@ -360,7 +366,7 @@ class DictationDaemon:
             if self._state != STATE_RECORDING:
                 # User toggled off at the same instant the timer fired.
                 return
-            generation = self._session_generation
+            epoch = self._recording_epoch
         self._logger.info(
             "session limit reached after %.0fs; prompting user",
             self.config.session_max_recording_s,
@@ -384,7 +390,7 @@ class DictationDaemon:
                 # moment after they began it, and losing the transcript.
                 same_session = (
                     self._state == STATE_RECORDING
-                    and self._session_generation == generation
+                    and self._recording_epoch == epoch
                 )
             if not same_session:
                 self._logger.info("session prompt resolved after toggle-off")
@@ -986,7 +992,7 @@ class DictationDaemon:
 
             write_last_text(self.runtime_paths.last_text_file, "")
             with self._lock:
-                self._session_generation += 1
+                self._recording_epoch += 1
             self._write_state(STATE_RECORDING)
             self._logger.info("recording started on %s", mic_name)
             self._arm_session_watchdog()

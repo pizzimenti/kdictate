@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.14.2
+
+### Fixed
+
+- **Dictation produced no text at all.** 0.14.0 added a per-recording counter
+  for the session-limit prompt and named it `_session_generation` — a name
+  already in use for something else entirely. That counter moves only when
+  the daemon rotates its session primitives (wedge recovery, safety-net
+  teardown), and `_decode_worker` reads it as "this session is gone, discard
+  your transcript". Bumping it on every recording start therefore made every
+  normal session look like a wedge recovery: the decode worker exited, the
+  transcript was dropped, and every session ended `final transcript emitted
+  (0 chars)` / `no speech detected`. The prompt's counter is now
+  `_recording_epoch` and the two are fully independent.
+
+### Changed
+
+- **The adaptive noise-floor gate is off by default** (`--noise-floor-margin`
+  now defaults to `0`). Measured on real hardware it tracked the speaker
+  rather than the room: a push-to-talk session is short and mostly speech, so
+  the trailing-window low percentile settled on quiet speech (~9000 RMS
+  against an ~11000-13000 speaking level) with no silence to anchor it. The
+  gate then either sat above the voice and rejected the session, or — with
+  the ceiling anchored to `energy_threshold`, which is a weak-microphone
+  floor and unrelated to the observed signal — was clamped below the noise
+  and passed every block, restoring the never-ending-utterance bug it was
+  added to fix. The mechanism is unchanged and still available; it is simply
+  opt-in until it can be tuned against real logs.
+- The noise floor is now measured and logged even when the gate is disabled,
+  and the `recording ended:` line reports the full `rms=min-max` range and the
+  margin in force. `peak_below_gate` collapses to 0 exactly when the gate is
+  wrong, which is when the number is needed most, so it is no longer the only
+  evidence available.
+- The forbidden-injector regression test no longer scans makepkg's
+  `packaging/src` and `packaging/pkg` staging trees. They hold extracted
+  whisper.cpp sources and pip-vendored wheels — numpy alone contains `wtype`
+  in unrelated places — so the guard failed on any machine where a package
+  had been built.
+
 ## 0.14.1
 
 ### Fixed
