@@ -141,10 +141,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--energy-threshold",
         type=float,
         default=defaults["energy_threshold"],
-        help="Absolute RMS floor for speech detection. Acts as a lower bound "
-             "on the adaptive threshold (see --noise-floor-margin); raise it "
-             "only if silence is still being detected as speech at a margin "
-             "of 0.",
+        help="Absolute RMS floor for speech detection, and the lower bound of "
+             "the adaptive gate (see --noise-floor-margin). Lower it (e.g. "
+             "500) for weak/quiet microphones whose speech never crosses the "
+             "default; it also scales the gate's ceiling, so lowering it "
+             "tightens the whole range rather than only the bottom.",
     )
     parser.add_argument(
         "--noise-floor-margin",

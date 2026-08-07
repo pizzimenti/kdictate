@@ -1,5 +1,58 @@
 # Changelog
 
+## 0.14.0
+
+### Fixed
+
+- **Dictation typed nothing at all.** The `ibus` CLI locates its bus socket by
+  display name (`~/.config/ibus/bus/<machine-id>-unix-wayland-0`), not over
+  D-Bus. The daemon is started from `default.target` at login, before the
+  session exports `WAYLAND_DISPLAY` into the systemd user environment, so
+  every call read a stale socket file from an earlier session and failed with
+  `ibus_bus_get_global_engine: assertion 'IBUS_IS_BUS (bus)' failed`. The
+  active engine was therefore never switched to KDictate, nothing subscribed
+  to `FinalTranscript`, and audio was recorded and transcribed into the void.
+  The daemon now recovers the display variables from the systemd user manager
+  at call time. This is the failure the v0.11.x "self-heal" was meant to
+  catch — its probe was blind for the same reason.
+- **The "still recording" banner never went away.** `urgency=critical` never
+  auto-expires (freedesktop spec; Plasma ignores `--expire-time` for it), so
+  `notify-send --wait` never returned and the daemon killed it — which does
+  not retract a banner the server already accepted, it only drops the action
+  buttons with their sender. The result was a permanent banner claiming to be
+  recording, with a dead Continue button. The banner's lifetime is now managed
+  explicitly via `CloseNotification` and ends with the window it describes,
+  whether the user answers, the countdown elapses, or the user stops recording
+  first. Urgency stays `critical` so the prompt still reaches users in Do Not
+  Disturb / presentation mode.
+- **Utterances never ended on their own in a noisy room.** A fixed RMS
+  threshold cannot separate speech from silence when the input gain is not
+  fixed either, and the daemon forces the mic to 91% on activation. Ambient
+  noise measured several times `energy_threshold`, so every block scored as
+  voiced, no silence gap was ever found, and every utterance was chopped
+  mid-word at `--max-utterance-s` — giving Whisper noise-only fragments to
+  hallucinate over.
+- The session-limit prompt no longer discards a Continue click that lands in
+  the last moment of the countdown, and no longer stops a *new* recording
+  when the user restarts dictation while the previous prompt is still
+  resolving.
+
+### Added
+
+- **`--noise-floor-margin`** — the speech gate now adapts to measured ambient
+  noise instead of relying on a fixed threshold. The effective gate is
+  `max(--energy-threshold, noise_floor * margin)`, clamped to 8x
+  `--energy-threshold` so a loud room cannot push it above the user's own
+  voice. `0` restores pure fixed-threshold behavior. The `recording ended:`
+  log line now reports the measured `noise_floor` and the `gate` range, and a
+  session that heard nothing says which knob to turn.
+
+### Changed
+
+- `--energy-threshold` stays at 700 and keeps its v0.13.0 meaning for
+  weak/quiet microphones. It is now the *lower bound* of the adaptive gate
+  (and scales its ceiling) rather than the whole gate.
+
 ## 0.13.0 — 2026-06-04
 
 ### Changed

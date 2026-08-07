@@ -35,18 +35,23 @@ from kdictate.runtime import RuntimePaths, write_last_text, write_state
 from kdictate.runtime_profile import resolve_runtime, set_thread_env
 
 
-# How long to wait for ``notify-send --print-id`` to report the id of the
-# banner it just posted. The id arrives as soon as the server answers the
-# Notify call, so this only has to cover a briefly busy notification daemon;
-# missing it costs us the ability to retract the banner early, not the prompt
-# itself.
-NOTIFICATION_ID_TIMEOUT_S: float = 1.0
-NOTIFICATION_ID_POLL_S: float = 0.02
-
 # Cadence for noticing that the user answered the prompt by simply toggling
 # recording off. 100ms is imperceptible next to a 10s decision window and
 # keeps the idle cost of the poll loop negligible.
 SESSION_PROMPT_POLL_S: float = 0.1
+
+# Slack after the countdown expires for an answer that is already in flight.
+# A Continue click in the last poll window still has to round-trip
+# ActionInvoked over D-Bus, and discarding it would stop the recording the
+# user just asked to keep.
+SESSION_PROMPT_ANSWER_GRACE_S: float = 0.75
+
+# Budget for the notify-send helper to exit after SIGTERM before it is killed.
+SESSION_PROMPT_TERMINATE_S: float = 0.5
+
+# Budget for the stdout reader to finish once notify-send has exited. Its pipe
+# is at EOF by then, so this only covers scheduling.
+NOTIFICATION_DRAIN_JOIN_S: float = 1.0
 
 # CloseNotification is a single round-trip to an already-running service; a
 # short bound keeps a wedged notification daemon from holding the session.
@@ -147,6 +152,11 @@ class DictationDaemon:
         self._session_watchdog_lock = threading.Lock()
         self._session_watchdog_timer: threading.Timer | None = None
         self._session_prompt_thread: threading.Thread | None = None
+        # Incremented on every recording start. The session-limit prompt
+        # blocks for seconds and then acts on the result, by which time the
+        # session it was asked about may have ended and a different one begun;
+        # "are we recording?" cannot tell those apart, but this can.
+        self._session_generation = 0
         self._lock = threading.RLock()
         self._recording = False
         self._starting = False
@@ -350,6 +360,7 @@ class DictationDaemon:
             if self._state != STATE_RECORDING:
                 # User toggled off at the same instant the timer fired.
                 return
+            generation = self._session_generation
         self._logger.info(
             "session limit reached after %.0fs; prompting user",
             self.config.session_max_recording_s,
@@ -364,9 +375,18 @@ class DictationDaemon:
                 self._logger.exception("session prompt failed; auto-stopping")
                 continued = False
             with self._lock:
-                still_recording = self._state == STATE_RECORDING
-            if not still_recording:
-                # User toggled off during the prompt window — nothing to do.
+                # Comparing the generation, not merely "is it recording":
+                # the prompt can take seconds to resolve and retract its
+                # banner, and a user who stops and immediately starts
+                # dictating again inside that window would otherwise be
+                # recording under a *new* session while this stale answer
+                # applied to the old one -- stopping the fresh recording a
+                # moment after they began it, and losing the transcript.
+                same_session = (
+                    self._state == STATE_RECORDING
+                    and self._session_generation == generation
+                )
+            if not same_session:
                 self._logger.info("session prompt resolved after toggle-off")
                 return
             if continued:
@@ -407,20 +427,24 @@ class DictationDaemon:
         deadline is worse than no banner, because its Continue button no
         longer does anything.
 
-        Two reasons the notification server will not handle that for us:
+        Why the server will not handle that for us: ``--urgency=critical`` is
+        defined by the freedesktop spec as never auto-expiring, and Plasma
+        honors that by ignoring ``--expire-time`` outright. Killing
+        ``notify-send`` does not help either — the server has already accepted
+        the banner, so all that dies is the sender, taking the action buttons
+        with it and leaving a banner that cannot be answered.
 
-          - ``--urgency=critical`` is defined by the freedesktop spec as
-            never auto-expiring, and Plasma honors that by ignoring
-            ``--expire-time`` outright. Urgency is therefore ``normal``, with
-            the expire time kept as a backstop for the case where our own
-            close call cannot be made (no ``gdbus``, unknown id).
-          - Killing ``notify-send`` does not retract a banner the server has
-            already accepted. It only drops the actions along with their
-            sender, which is what turns the stale banner into a dead one.
-
-        Retracting needs the id, so ``--print-id`` is passed and the first
-        stdout line read back. libnotify flushes it as soon as the server
-        answers the Notify call, well before ``--wait`` returns.
+        Critical is nonetheless the right urgency, and the retraction below is
+        what makes it safe. This banner is a question with a deadline, and
+        critical is exactly the class that survives Do Not Disturb and
+        presentation-mode inhibition. Downgrading it to ``normal`` so the
+        expire timer would fire would mean that a user in DND — screen
+        sharing, presenting — never sees the prompt at all and simply has the
+        recording cut from under them at the session limit. So the lifetime is
+        managed explicitly instead: ``--print-id`` gives us the id and
+        ``CloseNotification`` retracts the banner on every exit path.
+        ``--expire-time`` is kept only as a backstop for servers that do honor
+        it when our own close cannot be made (no ``gdbus``, unknown id).
         """
 
         notify_send = shutil.which("notify-send")
@@ -436,7 +460,7 @@ class DictationDaemon:
                     notify_send,
                     "--app-name=KDictate",
                     "--icon=audio-input-microphone",
-                    "--urgency=normal",
+                    "--urgency=critical",
                     f"--expire-time={expire_ms}",
                     "--action=continue=Continue",
                     "--print-id",
@@ -451,9 +475,10 @@ class DictationDaemon:
             self._logger.exception("failed to spawn notify-send for session prompt")
             return False
 
-        # One thread owns the pipe for the life of the call. The waiter below
-        # only ever inspects the list it fills, so there is no second reader
-        # to race with it for the id line.
+        # One thread owns the pipe for the life of the call, and nothing reads
+        # the list it fills until that thread has been joined -- so there is
+        # never a second reader on the fd, which mixing an inline read with a
+        # later communicate() would have created.
         stdout_lines: list[bytes] = []
 
         def _drain() -> None:
@@ -473,33 +498,41 @@ class DictationDaemon:
         )
         reader.start()
 
-        notification_id = self._await_notification_id(stdout_lines)
         try:
             self._wait_for_session_answer(proc, timeout_s)
         finally:
-            self._close_notification(notification_id)
-
-        reader.join(timeout=NOTIFICATION_ID_TIMEOUT_S)
-        # The id line is consumed here rather than in the parser so a build of
-        # notify-send that batches both lines together still resolves cleanly.
-        answers = [line for line in stdout_lines if line != str(notification_id).encode()]
-        return b"continue" in answers
-
-    def _await_notification_id(self, stdout_lines: list[bytes]) -> int | None:
-        """Return the id ``notify-send --print-id`` reported, if it arrives."""
-
-        deadline = time.monotonic() + NOTIFICATION_ID_TIMEOUT_S
-        while time.monotonic() < deadline:
-            if stdout_lines:
+            # The id is read here rather than up front. Blocking for it before
+            # the window opened spent part of the countdown the banner had
+            # already promised the user, and gave up entirely if a busy
+            # notification server was slow to answer -- leaving the banner
+            # unretractable, which is the very defect this path exists to fix.
+            # By now notify-send has exited and its pipe is at EOF, so the id
+            # is simply there.
+            reader.join(timeout=NOTIFICATION_DRAIN_JOIN_S)
+            stream = proc.stdout
+            if stream is not None and not stream.closed:
+                # Closing unblocks a drain thread still parked on read (it
+                # catches the resulting ValueError) so neither the thread nor
+                # the fd outlives this prompt. The watchdog re-arms every
+                # session, and the daemon is long-lived, so a leak here would
+                # accumulate until the process ran out of descriptors.
                 try:
-                    return int(stdout_lines[0])
-                except ValueError:
-                    self._logger.warning(
-                        "unexpected notify-send --print-id output: %r",
-                        stdout_lines[0],
-                    )
-                    return None
-            time.sleep(NOTIFICATION_ID_POLL_S)
+                    stream.close()
+                except OSError:
+                    pass
+                reader.join(timeout=NOTIFICATION_DRAIN_JOIN_S)
+            self._close_notification(self._notification_id(stdout_lines))
+
+        return b"continue" in stdout_lines
+
+    def _notification_id(self, stdout_lines: list[bytes]) -> int | None:
+        """Return the id ``notify-send --print-id`` reported, if it arrived."""
+
+        for line in stdout_lines:
+            try:
+                return int(line)
+            except ValueError:
+                continue
         self._logger.warning("notify-send did not report a notification id")
         return None
 
@@ -523,11 +556,34 @@ class DictationDaemon:
                 pass
             if not self._is_recording():
                 self._logger.info("session prompt pre-empted by toggle-off")
-                break
+                self._end_prompt_process(proc)
+                return
 
+        # The deadline is a promise about when recording stops, not a licence
+        # to destroy an answer already in flight. A Continue click landing in
+        # the final poll window is still round-tripping ActionInvoked over
+        # D-Bus; killing notify-send at that instant would discard the very
+        # button press the user made to keep recording, and stop the session
+        # anyway. The grace window lets that answer land.
+        try:
+            proc.wait(timeout=SESSION_PROMPT_ANSWER_GRACE_S)
+            return
+        except subprocess.TimeoutExpired:
+            pass
+        self._end_prompt_process(proc)
+
+    def _end_prompt_process(self, proc: subprocess.Popen[bytes]) -> None:
+        """Stop the notify-send helper, giving it a chance to exit cleanly."""
+
+        proc.terminate()
+        try:
+            proc.wait(timeout=SESSION_PROMPT_TERMINATE_S)
+            return
+        except subprocess.TimeoutExpired:
+            pass
         proc.kill()
         try:
-            proc.wait(timeout=1.0)
+            proc.wait(timeout=SESSION_PROMPT_TERMINATE_S)
         except subprocess.TimeoutExpired:
             pass
 
@@ -929,6 +985,8 @@ class DictationDaemon:
                 return
 
             write_last_text(self.runtime_paths.last_text_file, "")
+            with self._lock:
+                self._session_generation += 1
             self._write_state(STATE_RECORDING)
             self._logger.info("recording started on %s", mic_name)
             self._arm_session_watchdog()

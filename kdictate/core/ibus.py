@@ -55,12 +55,16 @@ DEFAULT_IBUS_TIMEOUT_S: Final[float] = 2.0
 # path is chosen before D-Bus is ever consulted.
 #
 # The daemon lands in that state whenever it starts before the session
-# manager exports the display variables into the systemd user environment.
-# The unit now orders itself after graphical-session.target so the common
-# case inherits a usable environment, but a user service that was enabled
-# by hand (or a daemon that outlives an ibus-daemon restart) can still be
-# holding an env with no display in it — so resolve the variables at call
-# time instead of trusting whatever we happened to be spawned with.
+# manager exports the display variables into the systemd user environment,
+# which is what ``WantedBy=default.target`` does at login.
+#
+# This is repaired here rather than in the unit. Binding the unit to
+# graphical-session.target would fix the ordering for sessions that activate
+# that target and silently stop the daemon autostarting for every session
+# that does not (Plasma with systemd startup disabled, plain WMs started from
+# a display manager or startx). Resolving the variables at call time instead
+# covers every start path — including D-Bus activation and a daemon that
+# outlives an ibus-daemon restart — without making autostart conditional.
 #
 # WAYLAND_DISPLAY leads because on a Wayland session DISPLAY alone does not
 # help: ibus still computes the wayland socket name and ignores it.
@@ -81,6 +85,12 @@ _LOGGER = logging.getLogger(__name__)
 # query fails so a daemon that started against a since-replaced session can
 # still recover without a restart.
 _display_env_cache: dict[str, str] | None = None
+
+# Set by :func:`_reset_display_env_cache` to mark the *next* resolve as a heal
+# attempt. On a heal, systemd overrides the process environment instead of
+# merely filling gaps in it -- see :func:`_display_env` for why the normal
+# precedence is wrong in exactly that case.
+_display_env_prefer_systemd: bool = False
 
 
 def _display_env_from_systemd() -> dict[str, str]:
@@ -124,33 +134,55 @@ def _display_env_from_systemd() -> dict[str, str]:
 def _display_env() -> dict[str, str]:
     """Return the display variables to hand the ``ibus`` CLI.
 
-    The process environment wins wherever it is already populated — if we
-    were started with a display we are in the session that owns it. systemd
-    is consulted only to fill a missing WAYLAND_DISPLAY, which is the one
-    variable whose absence actually breaks socket resolution.
+    Normal precedence is process environment first: if we were started with a
+    display, we belong to the session that owns it, and systemd is consulted
+    only to fill in a missing WAYLAND_DISPLAY — the one variable whose absence
+    breaks socket resolution outright.
+
+    That precedence inverts on a heal. A daemon that outlived its session
+    still *has* a WAYLAND_DISPLAY in ``os.environ``; it is simply pointing at
+    a compositor that is gone. Re-resolving with the normal precedence would
+    keep picking that stale value out of the environment and never ask
+    systemd, so the retry could never converge on the live display. After
+    :func:`_reset_display_env_cache` the systemd answer therefore wins
+    outright.
     """
 
-    global _display_env_cache
+    global _display_env_cache, _display_env_prefer_systemd
     if _display_env_cache is not None:
         return _display_env_cache
+
+    prefer_systemd = _display_env_prefer_systemd
+    _display_env_prefer_systemd = False
 
     resolved = {
         key: os.environ[key] for key in _DISPLAY_ENV_KEYS if os.environ.get(key)
     }
-    if "WAYLAND_DISPLAY" not in resolved:
-        for key, value in _display_env_from_systemd().items():
-            resolved.setdefault(key, value)
+    if prefer_systemd or "WAYLAND_DISPLAY" not in resolved:
+        from_systemd = _display_env_from_systemd()
+        if prefer_systemd:
+            resolved.update(from_systemd)
+        else:
+            for key, value in from_systemd.items():
+                resolved.setdefault(key, value)
         if resolved:
             _LOGGER.info("resolved display env for ibus: %s", sorted(resolved))
     _display_env_cache = resolved
     return resolved
 
 
-def _reset_display_env_cache() -> None:
-    """Force the next :func:`_display_env` call to re-resolve."""
+def _reset_display_env_cache(*, prefer_systemd: bool = False) -> None:
+    """Drop the cached display env so the next call re-resolves.
 
-    global _display_env_cache
+    ``prefer_systemd`` marks the re-resolve as a *heal*: systemd's answer
+    overrides the process environment rather than merely filling gaps in it.
+    Plain clearing (the default) is what a caller wants when it just needs
+    fresh state and the environment is still trustworthy.
+    """
+
+    global _display_env_cache, _display_env_prefer_systemd
     _display_env_cache = None
+    _display_env_prefer_systemd = prefer_systemd
 
 
 def _run_ibus(*args: str) -> subprocess.CompletedProcess[str]:
@@ -260,7 +292,7 @@ def ensure_active_engine(engine_name: str = KDICTATE_ENGINE_NAME) -> bool:
         # env points at a session that has since been replaced. Re-resolving
         # costs one subprocess on an already-failing path and turns the
         # second case from "silently types nothing forever" into a heal.
-        _reset_display_env_cache()
+        _reset_display_env_cache(prefer_systemd=True)
         current = _read_active_engine()
     if current == engine_name:
         return True

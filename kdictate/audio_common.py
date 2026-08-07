@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import logging
+import math
 import queue
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -145,38 +147,74 @@ def transcribe_pcm(
     return postprocess_transcript(text)
 
 
-# How fast the noise-floor estimate is allowed to climb, per block, when the
-# room gets louder. Deliberately sluggish (~1.5s time constant at 30ms
-# blocks): the floor must not chase speech, and it only ever updates outside
-# an utterance anyway. Falling is instantaneous by contrast -- a quieter block
-# *is* the new floor, and erring quiet only makes the VAD more sensitive.
-NOISE_FLOOR_RISE_ALPHA: float = 0.02
+# The noise floor is a low percentile of recent block energies rather than a
+# running minimum or a decayed average.
+#
+# Why a percentile over a window, and why it updates unconditionally:
+#   An estimator that only adapts *between* utterances cannot recover once
+#   `in_speech` latches -- and `in_speech` is exactly what fails to clear when
+#   the floor is wrong, so the error is self-sustaining. A percentile over a
+#   trailing window has no such latch: pauses between words and syllables keep
+#   landing in the low percentile even mid-utterance, so the estimate stays
+#   anchored to the room rather than to the speaker.
+#
+# Window and percentile are chosen against each other: 10s of history at a
+# 10th percentile means roughly one second of the quietest recent audio
+# defines the floor. Natural speech always contains that much inter-word
+# silence, so the floor does not chase the voice; sustained room noise has
+# nothing quieter to offer, so the floor rises to meet it.
+NOISE_WINDOW_BLOCKS: int = 333
+NOISE_FLOOR_PERCENTILE: float = 10.0
+
+# The adaptive gate stays disabled until the window holds this much audio, so
+# the opening of a session is judged by the configured threshold alone rather
+# than by an estimate derived from one or two blocks of the user's own voice.
+NOISE_FLOOR_MIN_BLOCKS: int = 16
+
+# Ceiling on how far the measured floor may push the gate above the configured
+# threshold. Without it, a loud room can raise the gate past the user's own
+# speech and reject an entire session -- and because the gate only ever moves
+# up, `--energy-threshold` could not rescue it.
+NOISE_FLOOR_MAX_MULTIPLE: float = 8.0
 
 
 @dataclass
 class VADConfig:
     """Parameters for the energy-based VAD segmenter.
 
-    ``energy_threshold`` is a *floor*, not the whole gate. A fixed absolute
-    RMS cannot separate speech from silence when the input gain is not fixed
-    either -- and the daemon itself forces the mic to 91% on every activation
-    (see ``core.audio.ACTIVATION_MIC_VOLUME_PERCENT``). Ambient room noise at
-    that gain measures an RMS of 2000-4000, several times the configured
-    threshold, so every block scores as voiced: ``in_speech`` never ends, no
-    silence gap is ever detected, and every utterance is a ``max_utterance_s``
-    force-commit chopped mid-word. Whisper then hallucinates over the
-    noise-only fragments, which is what the HALLUCINATION_PHRASES filter above
-    exists to mop up.
+    ``energy_threshold`` is the *lower bound* of the gate, not the whole gate.
+    A fixed absolute RMS cannot separate speech from silence when the input
+    gain is not fixed either -- and the daemon itself forces the mic to 91% on
+    every activation (see ``core.audio.ACTIVATION_MIC_VOLUME_PERCENT``).
+    Ambient room noise at that gain can measure an RMS of 2000-4000, several
+    times the configured threshold, so every block scores as voiced:
+    ``in_speech`` never ends, no silence gap is ever detected, and every
+    utterance is a ``max_utterance_s`` force-commit chopped mid-word. Whisper
+    then hallucinates over the noise-only fragments, which is what the
+    HALLUCINATION_PHRASES filter above exists to mop up.
 
-    So the effective threshold is ``max(energy_threshold, noise_floor *
-    noise_floor_margin)``, where the noise floor is measured continuously from
-    the audio itself. ``noise_floor_margin`` of 0 disables the adaptive half
-    and restores the pure fixed-threshold behavior.
+    The effective gate is therefore::
+
+        clamp(noise_floor * noise_floor_margin,
+              energy_threshold,
+              energy_threshold * NOISE_FLOOR_MAX_MULTIPLE)
+
+    with the floor measured from the audio itself. Both bounds matter:
+    ``energy_threshold`` keeps a quiet room from driving the gate below what a
+    weak microphone can produce, and the ceiling keeps a loud room from
+    driving it above what the user's voice can produce. ``noise_floor_margin``
+    of 0 disables the adaptive middle entirely and restores pure
+    fixed-threshold behavior.
+
+    The default ``energy_threshold`` stays at the 700 that v0.13.0 chose for
+    weak/quiet digital microphones; the adaptive half is what handles noisy
+    rooms now, so there is no reason to raise the floor back and lock those
+    microphones out again.
     """
 
     sample_rate: int = 16000
     block_ms: int = 30
-    energy_threshold: float = 1000.0
+    energy_threshold: float = 700.0
     silence_ms: int = 600
     min_speech_ms: int = 120
     start_speech_ms: int = 90
@@ -247,11 +285,30 @@ class VADSegmenter:
         peak_rms_overall = 0.0
         peak_rms_below_thresh = 0.0
 
-        # Seeded from the first block rather than from a guess, so the very
-        # first utterance is gated on a real measurement of this microphone in
-        # this room instead of on a constant that was tuned against neither.
-        noise_floor: float | None = None
+        # Trailing history of block energies. The gate for each block is
+        # derived from the blocks *before* it -- never from the block being
+        # judged, which would be circular: with the floor seeded from the
+        # current block, `rms >= rms * margin` is false for every rms, so the
+        # first block of a session could never be voiced and the opening
+        # syllable of push-to-talk dictation was dropped.
+        noise_history: deque[float] = deque(maxlen=NOISE_WINDOW_BLOCKS)
+        noise_floor = 0.0
         threshold = cfg.energy_threshold
+        threshold_min = threshold
+        threshold_max = threshold
+        gate_ceiling = cfg.energy_threshold * NOISE_FLOOR_MAX_MULTIPLE
+
+        # Opening blocks are withheld until the floor is measurable, then
+        # replayed through the calibrated gate rather than judged as they
+        # arrive. Judging them live would have to guess: score them against
+        # the bare `energy_threshold` and a noisy room latches a spurious
+        # noise-only utterance before the floor is ever known (precisely the
+        # input Whisper hallucinates over), but skip them and a user who
+        # speaks the instant the hotkey is pressed loses the opening
+        # syllable. Replaying costs NOISE_FLOOR_MIN_BLOCKS of latency once
+        # per session and needs neither guess.
+        primed = cfg.noise_floor_margin <= 0
+        prime_buffer: list[tuple[Any, float]] = []
 
         utterance_pcm: list[Any] = []
         pending_speech_pcm: list[Any] = []
@@ -288,6 +345,76 @@ class VADSegmenter:
             pending_speech_pcm.clear()
             pending_silence_pcm.clear()
 
+        def current_gate() -> float:
+            """Recompute the gate from the noise history collected so far."""
+
+            nonlocal noise_floor, threshold, threshold_min, threshold_max
+            if cfg.noise_floor_margin > 0 and noise_history:
+                noise_floor = float(
+                    np.percentile(noise_history, NOISE_FLOOR_PERCENTILE)
+                )
+                threshold = min(
+                    max(
+                        cfg.energy_threshold,
+                        noise_floor * cfg.noise_floor_margin,
+                    ),
+                    gate_ceiling,
+                )
+                threshold_min = min(threshold_min, threshold)
+                threshold_max = max(threshold_max, threshold)
+            return threshold
+
+        def handle_block(chunk: Any, rms: float, voiced: bool) -> None:
+            """Advance the speech state machine by one already-scored block."""
+
+            nonlocal total_blocks, voiced_blocks, peak_rms_overall
+            nonlocal peak_rms_below_thresh, in_speech, speech_block_count
+            nonlocal pending_speech_block_count, trailing_silence_count
+            nonlocal utterance_pcm, pending_speech_pcm, pending_silence_pcm
+
+            total_blocks += 1
+            if rms > peak_rms_overall:
+                peak_rms_overall = rms
+            if voiced:
+                voiced_blocks += 1
+            elif rms > peak_rms_below_thresh:
+                peak_rms_below_thresh = rms
+
+            if voiced:
+                if not in_speech:
+                    pending_speech_pcm.append(chunk)
+                    pending_speech_block_count += 1
+                    if pending_speech_block_count >= start_speech_blocks:
+                        in_speech = True
+                        logger.info("speech started (rms=%.0f)", rms)
+                        utterance_pcm = list(pending_speech_pcm)
+                        speech_block_count = len(utterance_pcm)
+                        pending_speech_pcm = []
+                        pending_speech_block_count = 0
+                        pending_silence_pcm = []
+                        trailing_silence_count = 0
+                else:
+                    if pending_silence_pcm:
+                        utterance_pcm.extend(pending_silence_pcm)
+                        pending_silence_pcm = []
+                    utterance_pcm.append(chunk)
+                    speech_block_count += 1
+                    trailing_silence_count = 0
+            elif in_speech:
+                pending_silence_pcm.append(chunk)
+                trailing_silence_count += 1
+            else:
+                pending_speech_pcm = []
+                pending_speech_block_count = 0
+
+            if in_speech and speech_block_count >= max_utterance_blocks:
+                logger.info("force-commit (max utterance reached)")
+                commit()
+                return
+
+            if in_speech and trailing_silence_count >= silence_blocks:
+                commit()
+
         try:
             while not self.stop_event.is_set():
                 try:
@@ -297,90 +424,74 @@ class VADSegmenter:
 
                 rms = float(np.sqrt(np.mean(chunk.astype(np.float32) ** 2)))
 
-                # The floor is only updated between utterances. Letting it
-                # track during speech would walk it up toward the speaker's
-                # own level, raising the threshold above the voice it is
-                # supposed to be detecting and cutting the utterance short.
-                if noise_floor is None:
-                    noise_floor = rms
-                elif not in_speech:
-                    if rms < noise_floor:
-                        noise_floor = rms
-                    else:
-                        noise_floor += NOISE_FLOOR_RISE_ALPHA * (rms - noise_floor)
-                if cfg.noise_floor_margin > 0:
-                    threshold = max(
-                        cfg.energy_threshold, noise_floor * cfg.noise_floor_margin
-                    )
-
-                voiced = rms >= threshold
-
-                total_blocks += 1
-                if rms > peak_rms_overall:
-                    peak_rms_overall = rms
-                if voiced:
-                    voiced_blocks += 1
-                elif rms > peak_rms_below_thresh:
-                    peak_rms_below_thresh = rms
-
-                if voiced:
-                    if not in_speech:
-                        pending_speech_pcm.append(chunk)
-                        pending_speech_block_count += 1
-                        if pending_speech_block_count >= start_speech_blocks:
-                            in_speech = True
-                            logger.info("speech started (rms=%.0f)", rms)
-                            utterance_pcm = list(pending_speech_pcm)
-                            speech_block_count = len(utterance_pcm)
-                            pending_speech_pcm = []
-                            pending_speech_block_count = 0
-                            pending_silence_pcm = []
-                            trailing_silence_count = 0
-                    else:
-                        if pending_silence_pcm:
-                            utterance_pcm.extend(pending_silence_pcm)
-                            pending_silence_pcm = []
-                        utterance_pcm.append(chunk)
-                        speech_block_count += 1
-                        trailing_silence_count = 0
-                elif in_speech:
-                    pending_silence_pcm.append(chunk)
-                    trailing_silence_count += 1
+                # A degenerate block (PortAudio can deliver a zero-length one
+                # on an xrun) yields NaN, which compares False against every
+                # bound. Left in the history it would poison the percentile
+                # for the rest of the session, so it is scored as silence and
+                # never recorded.
+                finite = math.isfinite(rms)
+                if not finite:
+                    rms = 0.0
                 else:
-                    pending_speech_pcm = []
-                    pending_speech_block_count = 0
+                    # Appended unconditionally, including mid-utterance. An
+                    # estimator that only adapts while `not in_speech` cannot
+                    # recover from a floor that is too low, because a too-low
+                    # floor is precisely what keeps `in_speech` latched --
+                    # the error would sustain itself for the whole session.
+                    noise_history.append(rms)
 
-                if in_speech and speech_block_count >= max_utterance_blocks:
-                    logger.info("force-commit (max utterance reached)")
-                    commit()
+                if not primed:
+                    prime_buffer.append((chunk, rms))
+                    if len(noise_history) < NOISE_FLOOR_MIN_BLOCKS:
+                        continue
+                    primed = True
+                    gate = current_gate()
+                    for held_chunk, held_rms in prime_buffer:
+                        handle_block(held_chunk, held_rms, held_rms >= gate)
+                    prime_buffer.clear()
                     continue
 
-                if in_speech and trailing_silence_count >= silence_blocks:
-                    commit()
+                handle_block(chunk, rms, rms >= current_gate())
 
             # Flush any in-progress utterance when recording stops
             if in_speech and speech_block_count >= min_speech_blocks and utterance_pcm:
                 commit()
         finally:
             # Single-line per-session summary so a silent recording is
-            # diagnosable from the log alone: peak_rms vs. the threshold tells
-            # you whether the mic gain is the issue, voiced_blocks vs. commits
+            # diagnosable from the log alone: peak_rms vs. the gate tells you
+            # whether the mic gain is the issue, voiced_blocks vs. commits
             # tells you whether VAD heuristics rejected real speech.
             #
-            # noise_floor and the *effective* threshold are reported (not just
-            # the configured one) because they are what noise_floor_margin has
-            # to be tuned against: a threshold pinned at energy_threshold means
-            # the margin is doing nothing, and voiced_blocks ~= blocks with few
-            # commits means it is still too low to find a silence gap.
+            # The gate is reported as the range it actually spanned, not as
+            # its final value. `voiced_blocks` accumulates against whatever
+            # gate was in force at each block, so printing only the last one
+            # can produce a self-contradictory line -- blocks counted voiced
+            # against a number the peak RMS never reached -- and a user
+            # tuning `noise_floor_margin` against that reads it backwards.
             elapsed = time.monotonic() - session_start
             logger.info(
-                "recording ended: %.1fs, %d blocks, %d voiced (>=%.0f), "
-                "%d committed, peak_rms=%.0f, peak_below_thresh=%.0f, "
+                "recording ended: %.1fs, %d blocks, %d voiced, %d committed, "
+                "peak_rms=%.0f, peak_below_gate=%.0f, gate=%.0f-%.0f, "
                 "noise_floor=%.0f",
-                elapsed, total_blocks, voiced_blocks, threshold,
-                commits, peak_rms_overall, peak_rms_below_thresh,
-                noise_floor if noise_floor is not None else -1.0,
+                elapsed, total_blocks, voiced_blocks, commits,
+                peak_rms_overall, peak_rms_below_thresh,
+                threshold_min, threshold_max, noise_floor,
             )
+
+            # A session that heard nothing is the one failure the summary
+            # above is too terse to explain, and the fix depends on which
+            # bound rejected the audio -- so name the knob rather than
+            # leaving the user to infer it from raw numbers.
+            if total_blocks and not voiced_blocks:
+                logger.warning(
+                    "no speech detected: %d blocks all below the %.0f-%.0f gate "
+                    "(peak_rms=%.0f). If you were speaking, lower "
+                    "--noise-floor-margin (currently %.2f) or "
+                    "--energy-threshold (currently %.0f).",
+                    total_blocks, threshold_min, threshold_max,
+                    peak_rms_overall, cfg.noise_floor_margin,
+                    cfg.energy_threshold,
+                )
 
             # Always post the stop sentinel — even if the loop above raised
             # — so the decode consumer can never wedge waiting for a sentinel

@@ -1,13 +1,16 @@
 [Unit]
 Description=KDictate core daemon
-# graphical-session.target is what exports WAYLAND_DISPLAY into the systemd
-# user environment. Pulling the daemon in from default.target instead starts
-# it at user-manager time, before that export happens -- "After=" alone does
-# not wait for a target nothing else has ordered us against. The daemon then
-# holds an environment with no display for its whole lifetime, and every
-# "ibus" CLI call it makes resolves the wrong bus socket and fails (see the
-# _DISPLAY_ENV_KEYS comment in kdictate/core/ibus.py).
-PartOf=graphical-session.target
+# Deliberately still pulled in by default.target below, not by
+# graphical-session.target. Ordering after that target does not make the
+# daemon inherit WAYLAND_DISPLAY -- "After=" alone does not wait for a target
+# nothing else has ordered us against -- so the daemon can start before the
+# session exports it, and every "ibus" CLI call then resolves the wrong bus
+# socket. That is fixed where it can be fixed for every start path at once:
+# kdictate/core/ibus.py recovers the display variables from the systemd user
+# manager at call time. Binding [Install] to graphical-session.target instead
+# would look tidier but silently stops the daemon autostarting under any
+# session that never activates that target (Plasma with systemd startup
+# disabled, plain WMs launched from a display manager or startx).
 After=graphical-session.target sound.target
 
 [Service]
@@ -18,4 +21,4 @@ Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=graphical-session.target
+WantedBy=default.target

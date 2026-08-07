@@ -20,12 +20,11 @@ def daemon_arg_defaults() -> dict[str, object]:
         "cpu_threads": recommended_shortform_cpu_threads(),
         "compute_type": "int8",
         "block_ms": 30,
-        # Restored from the 700.0 that v0.13.0 set. Lowering the absolute
-        # floor was the wrong direction: the ambient noise floor at the mic
-        # gain this daemon forces already sits above it, so dropping it only
-        # widened the band of room noise that scores as speech. The adaptive
-        # noise_floor_margin is what actually separates the two now.
-        "energy_threshold": 1000.0,
+        # Kept at the 700.0 v0.13.0 chose for weak/quiet digital microphones,
+        # whose speech falls below the older 1000. Raising it back would lock
+        # those microphones out again, and it is no longer the knob that
+        # handles noisy rooms -- noise_floor_margin is.
+        "energy_threshold": 700.0,
         "noise_floor_margin": 1.6,
         "silence_ms": 600,
         "min_speech_ms": 120,
