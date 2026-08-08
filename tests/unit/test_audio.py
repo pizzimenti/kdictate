@@ -7,6 +7,7 @@ import unittest
 from unittest import mock
 
 from kdictate.core.audio import (
+    DEFAULT_SOURCE_TOKEN,
     MIN_MIC_VOLUME_PERCENT,
     ensure_default_source_volume,
     read_default_source_volume,
@@ -134,6 +135,18 @@ class ReadSourceVolumeTest(unittest.TestCase):
 class EnsureSourceVolumeTest(unittest.TestCase):
     """The daemon may rescue a drifted-down gain; it may not impose one."""
 
+    SOURCE = "alsa_input.pci-0000_03_00.6.analog-stereo"
+
+    def setUp(self) -> None:
+        # Pin the resolved source so these tests neither shell out to a real
+        # pactl nor depend on whatever device this machine happens to have.
+        patcher = mock.patch(
+            "kdictate.core.audio.read_default_source_name",
+            return_value=self.SOURCE,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_a_healthy_level_is_left_completely_alone(self) -> None:
         # The regression this whole change exists to prevent. Pinning a fixed
         # level on every activation drove already-healthy sources into
@@ -167,7 +180,40 @@ class EnsureSourceVolumeTest(unittest.TestCase):
                 "kdictate.core.audio.set_default_source_volume", return_value=True
             ) as setter:
                 self.assertTrue(ensure_default_source_volume(50))
-        setter.assert_called_once_with(50)
+        setter.assert_called_once_with(50, self.SOURCE)
+
+    def test_read_and_write_are_pinned_to_one_resolved_device(self) -> None:
+        """Both pactl calls must name the same concrete source.
+
+        `@DEFAULT_SOURCE@` is re-resolved by pactl on every invocation, so
+        using it for the read and the write lets a default-device switch
+        between them measure one device and then change another — writing a
+        floor onto a device nobody asked about.
+        """
+
+        with mock.patch(
+            "kdictate.core.audio.read_default_source_volume", return_value=40
+        ) as reader:
+            with mock.patch(
+                "kdictate.core.audio.set_default_source_volume", return_value=True
+            ) as setter:
+                ensure_default_source_volume(50)
+
+        reader.assert_called_once_with(self.SOURCE)
+        self.assertEqual(setter.call_args.args[1], self.SOURCE)
+
+    def test_falls_back_to_the_default_token_when_the_name_is_unavailable(self) -> None:
+        with mock.patch(
+            "kdictate.core.audio.read_default_source_name", return_value=None
+        ):
+            with mock.patch(
+                "kdictate.core.audio.read_default_source_volume", return_value=40
+            ) as reader:
+                with mock.patch(
+                    "kdictate.core.audio.set_default_source_volume", return_value=True
+                ):
+                    ensure_default_source_volume(50)
+        reader.assert_called_once_with(DEFAULT_SOURCE_TOKEN)
 
     def test_zero_floor_never_touches_the_microphone(self) -> None:
         with mock.patch("kdictate.core.audio.read_default_source_volume") as reader:
