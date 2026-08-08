@@ -146,8 +146,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="Absolute RMS floor for speech detection, and the lower bound of "
              "the adaptive gate (see --noise-floor-margin). Lower it (e.g. "
              "500) for weak/quiet microphones whose speech never crosses the "
-             "default; it also scales the gate's ceiling, so lowering it "
-             "tightens the whole range rather than only the bottom.",
+             "default. It bounds the gate only from below: if the adaptive "
+             "gate is sitting too high, lower --noise-floor-margin instead — "
+             "changing this will not bring it down.",
     )
     parser.add_argument(
         "--noise-floor-margin",
@@ -157,10 +158,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
              "to count as speech. Defaults to 0 — the adaptive gate is OFF and "
              "--energy-threshold is used alone. Set it (try 1.6) to opt in: "
              "the gate becomes max(--energy-threshold, noise_floor * margin), "
-             "capped at 8x --energy-threshold. Tune against the 'recording "
-             "ended:' log line, which reports the measured noise_floor and the "
-             "rms range whether or not the gate is enabled: the margin only "
-             "helps if noise_floor sits well below your speaking level.",
+             "with no upper limit, so this is the only knob that lowers it. "
+             "Tune against the 'recording ended:' log line, which reports the "
+             "measured noise_floor and the rms range whether or not the gate "
+             "is enabled: the margin only helps if noise_floor sits well below "
+             "your speaking level.",
     )
     parser.add_argument(
         "--mic-min-volume-percent",

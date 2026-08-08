@@ -217,10 +217,10 @@ class VADConfig:
     trailing-window estimate tracked the *speaker* rather than the room:
     push-to-talk sessions are short and mostly speech, so the low percentile
     settled on quiet speech (~9000 RMS against an ~11000-13000 speaking level)
-    with no silence in the window to anchor it. Both outcomes were bad — the
-    gate either landed above the voice and rejected the session, or was
-    clamped by the ceiling below the noise and passed every block, restoring
-    the very never-ending-utterance bug it was added to fix.
+    with no silence in the window to anchor it, so the gate landed above the
+    voice and rejected the session. (The ceiling that once existed turned that
+    into the opposite failure — clamped below the noise, every block voiced —
+    which is why it is gone rather than retuned.)
 
     The floor is still measured and logged when the margin is 0, so the
     ``recording ended:`` line carries the data needed to choose one. Set a
