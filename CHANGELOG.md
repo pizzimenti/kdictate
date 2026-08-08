@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.15.0
+
+### Fixed
+
+- **The daemon no longer forces the microphone to 91% on every activation.**
+  This is the root cause behind the VAD never finding a silence gap. v0.10.0
+  pinned capture to 91% because the source had drifted to 40% and speech fell
+  below the threshold — which fixed that case and created a worse one: on an
+  already-healthy source it drives capture into clipping, and a clipped signal
+  has no dynamic range left for an energy VAD to segment. Measured at 91% on
+  the author's hardware: `peak_rms` 32768 (int16 maximum, i.e. clipping),
+  noise floor ~9000 against a speaking level of ~11000-13000. A 1.3x ratio
+  between "room" and "voice" is not separable by *any* threshold, which is why
+  1500, 1000, 700 and the adaptive gate all failed in turn.
+  `--mic-min-volume-percent` (default 50) is now a floor the daemon rescues
+  you from rather than a level it imposes: it only ever raises, only from
+  below the floor, and `0` disables the behaviour entirely. **Existing users
+  should set their input level in system settings** — the daemon will now
+  leave it alone.
+- **Short words were silently dropped** when the adaptive gate was enabled.
+  Blocks are withheld until the noise floor is measurable, but a recording
+  that ended before that point discarded the buffer outright, and with
+  `total_blocks` still 0 even the "no speech detected" warning could not fire.
+  A push-to-talk word like "yes" fits entirely inside that window. Held blocks
+  are now scored against the configured threshold when the recording ends
+  early.
+- **`install.py` could not detect a source install's version at all.** The
+  probe ran `python -c` with the installer's own cwd, so `sys.path[0]` was the
+  repo root and it imported the tree being installed *from* rather than the
+  installed copy — always reporting this tree's version and making the version
+  gate a permanent no-op. Now uses `-P` and a cwd outside the checkout.
+- **`install.py --reconfigure`** restores the repair path. Every configuration
+  step is idempotent and re-running them is how a clobbered Ctrl+Space
+  binding, a missing IBus registration, or a backend switch gets fixed; the
+  version gate skipped all of them when versions matched, leaving an install
+  broken *at the current version* unfixable short of editing
+  `app_metadata.py`. Reconfiguring skips the package rebuild, which has
+  nothing to do.
+- **A bare `pytest` at the repo root now works.** It recursed into makepkg's
+  `packaging/src` staging tree, where setuptools alone ships ~142 test modules
+  that cannot be collected there, so the obvious invocation reported "142
+  errors during collection" and ran none of this project's tests — on any
+  machine where a package had been built, which a packaged install now always
+  does. Fixed with `testpaths`/`norecursedirs` rather than per-test skips.
+
+### Changed
+
+- **Removed the adaptive gate's ceiling.** It was `energy_threshold * 8`, and
+  `energy_threshold` is a weak-microphone floor that says nothing about the
+  signal actually arriving. On hardware with a ~9000 noise floor the ceiling
+  sat at 5600 — *below* the noise — so every block scored as voiced and
+  utterances ran to `max_utterance_s`, reintroducing the exact failure the
+  gate exists to prevent. Unclamped, a loud room can instead push the gate
+  above the voice and reject a session: a louder failure, but one the
+  end-of-session warning names the knob for, rather than a silent stream of
+  Whisper hallucinations over room noise.
+- `GateCeilingTest` passed only because it picked an ambient level that
+  happened to sit just under the old ceiling. Replaced with `LoudRoomTest`,
+  which uses the level that actually demonstrated the failure.
+
 ## 0.14.2
 
 ### Fixed

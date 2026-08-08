@@ -34,6 +34,10 @@ def daemon_arg_defaults() -> dict[str, object]:
         # default is the fixed threshold that shipped before it. Set a margin
         # (1.6 is a reasonable starting point) to opt in.
         "noise_floor_margin": 0.0,
+        # A floor the daemon rescues you from, not a level it imposes. See
+        # core.audio.MIN_MIC_VOLUME_PERCENT for why pinning 91% on every
+        # activation was actively harmful.
+        "mic_min_volume_percent": 50,
         "silence_ms": 600,
         "min_speech_ms": 120,
         "start_speech_ms": 90,

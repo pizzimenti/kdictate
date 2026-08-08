@@ -27,6 +27,7 @@ class DictationConfig:
     block_ms: int
     energy_threshold: float
     noise_floor_margin: float
+    mic_min_volume_percent: int
     silence_ms: int
     min_speech_ms: int
     start_speech_ms: int
@@ -57,6 +58,7 @@ class DictationConfig:
             block_ms=namespace.block_ms,
             energy_threshold=namespace.energy_threshold,
             noise_floor_margin=namespace.noise_floor_margin,
+            mic_min_volume_percent=namespace.mic_min_volume_percent,
             silence_ms=namespace.silence_ms,
             min_speech_ms=namespace.min_speech_ms,
             start_speech_ms=namespace.start_speech_ms,
@@ -159,6 +161,18 @@ def build_arg_parser() -> argparse.ArgumentParser:
              "ended:' log line, which reports the measured noise_floor and the "
              "rms range whether or not the gate is enabled: the margin only "
              "helps if noise_floor sits well below your speaking level.",
+    )
+    parser.add_argument(
+        "--mic-min-volume-percent",
+        type=int,
+        default=defaults["mic_min_volume_percent"],
+        help="Capture-volume floor. On activation the daemon raises the "
+             "default source to this level ONLY if it is currently below it, "
+             "and never lowers it — above the floor the gain is yours to set. "
+             "Set 0 to leave the microphone completely alone. Raise it if "
+             "quiet speech is missed; if the log shows peak_rms near 32768 "
+             "your microphone is clipping and you should turn it down in "
+             "system settings.",
     )
     parser.add_argument(
         "--silence-ms",

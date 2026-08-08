@@ -147,6 +147,43 @@ class InstalledVersionTests(unittest.TestCase):
             install._installed_version(_ctx(Path("/nonexistent")), False)
         )
 
+    def test_source_probe_cannot_import_the_tree_it_is_installing_from(self) -> None:
+        """The probe must ask about the *installed* copy, not this checkout.
+
+        `python -c` puts the cwd on sys.path, and the documented invocation is
+        `python3 install.py` from the repo root — which contains the kdictate
+        package. Without -P the probe imported the source tree, always
+        reported its own version, and made the version gate a no-op that could
+        never detect an update.
+        """
+
+        ctx = _ctx(Path("/tmp/kdictate-runtime"))
+        completed = _completed("0.12.0\n")
+        with mock.patch.object(Path, "exists", return_value=True):
+            with mock.patch.object(
+                install, "run_command", return_value=completed
+            ) as run:
+                self.assertEqual(install._installed_version(ctx, False), "0.12.0")
+
+        argv = run.call_args.args[0]
+        self.assertIn("-P", argv)
+        # ...and not resolved relative to wherever the installer was invoked.
+        self.assertEqual(run.call_args.kwargs["cwd"], ctx.home)
+
+
+class InstallerArgumentTests(unittest.TestCase):
+    def test_reconfigure_flag_exists_and_defaults_off(self) -> None:
+        """Repairing an install at the current version must be possible.
+
+        Every configuration step is idempotent and re-running them is the
+        documented repair path. The version gate skips all of them when the
+        versions match, so without an override a user whose install broke *at
+        the current version* could only fix it by editing app_metadata.py.
+        """
+
+        self.assertFalse(install.parse_args([]).reconfigure)
+        self.assertTrue(install.parse_args(["--reconfigure"]).reconfigure)
+
 
 class PromptUpdateTests(unittest.TestCase):
     def test_empty_answer_defaults_to_updating(self) -> None:

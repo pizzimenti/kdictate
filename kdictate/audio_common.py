@@ -171,11 +171,21 @@ NOISE_FLOOR_PERCENTILE: float = 10.0
 # than by an estimate derived from one or two blocks of the user's own voice.
 NOISE_FLOOR_MIN_BLOCKS: int = 16
 
-# Ceiling on how far the measured floor may push the gate above the configured
-# threshold. Without it, a loud room can raise the gate past the user's own
-# speech and reject an entire session -- and because the gate only ever moves
-# up, `--energy-threshold` could not rescue it.
-NOISE_FLOOR_MAX_MULTIPLE: float = 8.0
+# There is deliberately no ceiling on the adaptive gate.
+#
+# One was tried: `energy_threshold * 8`. It made things worse, because
+# `energy_threshold` is a floor for weak microphones and says nothing about
+# the level of the signal actually arriving. On hardware whose measured noise
+# floor was ~9000 the ceiling sat at 5600 -- *below* the noise -- so every
+# block scored as voiced, no silence gap was ever found, and utterances ran to
+# max_utterance_s and were chopped mid-word. That is precisely the failure the
+# adaptive gate exists to prevent, reintroduced by the guard meant to make it
+# safe.
+#
+# Unclamped, a loud room can instead push the gate above the user's voice and
+# reject a session outright. That is the better failure: it is loud rather
+# than silent, the end-of-session warning names the knob to turn, and the
+# alternative was emitting a stream of Whisper hallucinations over room noise.
 
 
 @dataclass
@@ -195,14 +205,12 @@ class VADConfig:
 
     The effective gate is therefore::
 
-        clamp(noise_floor * noise_floor_margin,
-              energy_threshold,
-              energy_threshold * NOISE_FLOOR_MAX_MULTIPLE)
+        max(energy_threshold, noise_floor * noise_floor_margin)
 
-    with the floor measured from the audio itself. Both bounds matter:
-    ``energy_threshold`` keeps a quiet room from driving the gate below what a
-    weak microphone can produce, and the ceiling keeps a loud room from
-    driving it above what the user's voice can produce.
+    with the floor measured from the audio itself. ``energy_threshold`` is the
+    lower bound, keeping a quiet room from driving the gate below what a weak
+    microphone can produce. There is no upper bound — see the comment on
+    NOISE_FLOOR_MAX_MULTIPLE's removal above for why one made things worse.
 
     **The adaptive half is off by default** (``noise_floor_margin`` of 0), and
     the gate is then just ``energy_threshold``. Measured on real hardware, the
@@ -311,7 +319,6 @@ class VADSegmenter:
         threshold = cfg.energy_threshold
         threshold_min = threshold
         threshold_max = threshold
-        gate_ceiling = cfg.energy_threshold * NOISE_FLOOR_MAX_MULTIPLE
 
         # Opening blocks are withheld until the floor is measurable, then
         # replayed through the calibrated gate rather than judged as they
@@ -378,12 +385,9 @@ class VADSegmenter:
                 np.percentile(noise_history, NOISE_FLOOR_PERCENTILE)
             )
             if cfg.noise_floor_margin > 0:
-                threshold = min(
-                    max(
-                        cfg.energy_threshold,
-                        noise_floor * cfg.noise_floor_margin,
-                    ),
-                    gate_ceiling,
+                threshold = max(
+                    cfg.energy_threshold,
+                    noise_floor * cfg.noise_floor_margin,
                 )
                 threshold_min = min(threshold_min, threshold)
                 threshold_max = max(threshold_max, threshold)
@@ -480,6 +484,25 @@ class VADSegmenter:
                     continue
 
                 handle_block(chunk, rms, rms >= current_gate())
+
+            # Recording stopped before the floor was ever measurable, so the
+            # held blocks have not been scored by anything yet. Score them now
+            # rather than dropping them: a short push-to-talk word ("yes",
+            # "send") fits entirely inside the priming window, and discarding
+            # the buffer silently threw the whole utterance away — with
+            # total_blocks still 0, even the "no speech detected" warning
+            # could not fire.
+            #
+            # They are judged against the configured threshold, not against a
+            # floor derived from these same few blocks: too little audio to
+            # calibrate, and what there is *is* the speech we are trying to
+            # detect, so an estimate from it would gate the voice out.
+            if prime_buffer:
+                for held_chunk, held_rms in prime_buffer:
+                    handle_block(
+                        held_chunk, held_rms, held_rms >= cfg.energy_threshold
+                    )
+                prime_buffer.clear()
 
             # Flush any in-progress utterance when recording stops
             if in_speech and speech_block_count >= min_speech_blocks and utterance_pcm:

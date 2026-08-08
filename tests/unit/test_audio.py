@@ -7,7 +7,9 @@ import unittest
 from unittest import mock
 
 from kdictate.core.audio import (
-    ACTIVATION_MIC_VOLUME_PERCENT,
+    MIN_MIC_VOLUME_PERCENT,
+    ensure_default_source_volume,
+    read_default_source_volume,
     resolve_default_input_device,
     set_default_source_volume,
 )
@@ -71,7 +73,7 @@ class AudioHelpersTest(unittest.TestCase):
         called_args = run.call_args_list[0].args[0]
         self.assertEqual(
             called_args,
-            ["pactl", "set-source-volume", "@DEFAULT_SOURCE@", f"{ACTIVATION_MIC_VOLUME_PERCENT}%"],
+            ["pactl", "set-source-volume", "@DEFAULT_SOURCE@", f"{MIN_MIC_VOLUME_PERCENT}%"],
         )
 
     def test_set_default_source_volume_returns_false_on_pactl_failure(self) -> None:
@@ -87,3 +89,101 @@ class AudioHelpersTest(unittest.TestCase):
     def test_set_default_source_volume_returns_false_when_pactl_missing(self) -> None:
         with mock.patch("kdictate.core.audio.subprocess.run", side_effect=OSError("missing pactl")):
             self.assertFalse(set_default_source_volume())
+
+
+# Verbatim `pactl get-source-volume @DEFAULT_SOURCE@` output.
+_PACTL_VOLUME_OUTPUT = (
+    "Volume: front-left: 59637 /  91% / -2.46 dB,   "
+    "front-right: 59637 /  91% / -2.46 dB\n"
+    "        balance 0.00\n"
+)
+
+
+def _volume_result(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
+    return subprocess.CompletedProcess(
+        args=["pactl", "get-source-volume", "@DEFAULT_SOURCE@"],
+        returncode=returncode,
+        stdout=stdout,
+        stderr="",
+    )
+
+
+class ReadSourceVolumeTest(unittest.TestCase):
+    def test_parses_the_percentage_from_real_pactl_output(self) -> None:
+        with mock.patch(
+            "kdictate.core.audio.subprocess.run",
+            return_value=_volume_result(_PACTL_VOLUME_OUTPUT),
+        ):
+            self.assertEqual(read_default_source_volume(), 91)
+
+    def test_returns_none_when_no_percentage_is_present(self) -> None:
+        with mock.patch(
+            "kdictate.core.audio.subprocess.run",
+            return_value=_volume_result("Volume: unknown\n"),
+        ):
+            self.assertIsNone(read_default_source_volume())
+
+    def test_returns_none_when_pactl_fails(self) -> None:
+        with mock.patch(
+            "kdictate.core.audio.subprocess.run",
+            return_value=_volume_result("", returncode=1),
+        ):
+            self.assertIsNone(read_default_source_volume())
+
+
+class EnsureSourceVolumeTest(unittest.TestCase):
+    """The daemon may rescue a drifted-down gain; it may not impose one."""
+
+    def test_a_healthy_level_is_left_completely_alone(self) -> None:
+        # The regression this whole change exists to prevent. Pinning a fixed
+        # level on every activation drove already-healthy sources into
+        # clipping, which costs the VAD the dynamic range it needs.
+        with mock.patch(
+            "kdictate.core.audio.read_default_source_volume", return_value=91
+        ):
+            with mock.patch(
+                "kdictate.core.audio.set_default_source_volume"
+            ) as setter:
+                self.assertTrue(ensure_default_source_volume(50))
+        setter.assert_not_called()
+
+    def test_a_level_exactly_at_the_floor_is_left_alone(self) -> None:
+        with mock.patch(
+            "kdictate.core.audio.read_default_source_volume", return_value=50
+        ):
+            with mock.patch(
+                "kdictate.core.audio.set_default_source_volume"
+            ) as setter:
+                self.assertTrue(ensure_default_source_volume(50))
+        setter.assert_not_called()
+
+    def test_a_drifted_level_is_raised_to_the_floor(self) -> None:
+        # The failure PR #10 was written for: the source had drifted to 40%
+        # and no speech crossed the VAD threshold.
+        with mock.patch(
+            "kdictate.core.audio.read_default_source_volume", return_value=40
+        ):
+            with mock.patch(
+                "kdictate.core.audio.set_default_source_volume", return_value=True
+            ) as setter:
+                self.assertTrue(ensure_default_source_volume(50))
+        setter.assert_called_once_with(50)
+
+    def test_zero_floor_never_touches_the_microphone(self) -> None:
+        with mock.patch("kdictate.core.audio.read_default_source_volume") as reader:
+            with mock.patch(
+                "kdictate.core.audio.set_default_source_volume"
+            ) as setter:
+                self.assertTrue(ensure_default_source_volume(0))
+        reader.assert_not_called()
+        setter.assert_not_called()
+
+    def test_unknown_level_is_not_guessed_at(self) -> None:
+        with mock.patch(
+            "kdictate.core.audio.read_default_source_volume", return_value=None
+        ):
+            with mock.patch(
+                "kdictate.core.audio.set_default_source_volume"
+            ) as setter:
+                self.assertFalse(ensure_default_source_volume(50))
+        setter.assert_not_called()

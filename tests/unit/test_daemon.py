@@ -111,6 +111,7 @@ def _make_config(runtime_paths: RuntimePaths) -> DictationConfig:
         block_ms=30,
         energy_threshold=600.0,
         noise_floor_margin=1.6,
+        mic_min_volume_percent=50,
         silence_ms=220,
         min_speech_ms=180,
         start_speech_ms=90,

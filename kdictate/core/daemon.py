@@ -27,7 +27,7 @@ from kdictate.audio_common import (
 from kdictate.backend import TranscriptionBackend, create_cpu_backend
 from kdictate.config import DictationConfig, parse_args
 from kdictate.constants import STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_STARTING, STATE_TRANSCRIBING
-from kdictate.core.audio import resolve_default_input_device, set_default_source_volume
+from kdictate.core.audio import ensure_default_source_volume, resolve_default_input_device
 from kdictate.core.ibus import ensure_active_engine
 from kdictate.exceptions import AudioInputError, ConfigurationError, TranscriptionError
 from kdictate.logging_utils import configure_logging, get_propagating_child
@@ -911,12 +911,16 @@ class DictationDaemon:
             self._write_state(STATE_IDLE)
             return
 
-        # Restore a known-good input gain on every activation — the VAD's
-        # energy_threshold assumes the mic is audible, and Plasma/KDE controls
-        # (or app-level auto-gain) can silently drop it below that floor.
+        # Rescue an input gain that has drifted below usable — Plasma/KDE
+        # controls (or app-level auto-gain) can silently drop it far enough
+        # that no speech crosses the VAD threshold. Only ever raises, and only
+        # from below the floor: pinning a fixed level on every activation
+        # overrode gains the user had set deliberately and drove healthy
+        # sources into clipping, which costs the VAD the dynamic range it
+        # needs far more than a slightly quiet mic does.
         # Placed after the cancellation gate so a stop-during-validation
         # doesn't mutate the user's system volume for no reason.
-        set_default_source_volume()
+        ensure_default_source_volume(self.config.mic_min_volume_percent)
 
         # Ensure the kdictate IBus engine is active. On KDE/Wayland the
         # active engine can silently revert to the keyboard layout, in
@@ -925,7 +929,7 @@ class DictationDaemon:
         # the focused field.
         ensure_active_engine()
 
-        # Re-check cancellation: set_default_source_volume() and
+        # Re-check cancellation: ensure_default_source_volume() and
         # ensure_active_engine() shell out to pactl/ibus and can each take
         # up to their respective timeouts. A stop arriving during that
         # window should abort before we spin up VAD/decode threads.

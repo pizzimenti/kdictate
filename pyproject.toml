@@ -15,6 +15,24 @@ kdictate-daemon = "kdictate.core.daemon:main"
 kdictatectl = "kdictate.cli.dictatectl:main"
 ibus-engine-kdictate = "kdictate.ibus_engine.main:main"
 
+[tool.pytest.ini_options]
+# Without this, a bare `pytest` at the repo root recurses into makepkg's
+# staging trees. Those hold extracted whisper.cpp sources and pip-vendored
+# wheels, and setuptools alone ships ~142 of its own test modules that cannot
+# be collected here — so the obvious invocation reported "142 errors during
+# collection" and ran none of this project's tests. Those directories are
+# gitignored but exist on any machine where a package has been built, which
+# install.py now does as part of a normal packaged install.
+testpaths = ["tests"]
+norecursedirs = [
+    "packaging/src",
+    "packaging/pkg",
+    "build",
+    "dist",
+    ".venv",
+    "*.egg-info",
+]
+
 [tool.setuptools.packages.find]
 include = ["kdictate*"]
 

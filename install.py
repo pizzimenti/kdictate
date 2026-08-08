@@ -19,6 +19,7 @@ Everything lives under ``$HOME``:
 
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -606,9 +607,19 @@ def _installed_version(ctx: InstallContext, packaged: bool) -> str | None:
 
     if not ctx.python_bin.exists():
         return None
+    # -P (3.11+, and pyproject already requires >=3.11) stops Python putting
+    # the current directory on sys.path. Without it, `python -c` resolves
+    # sys.path[0] to the cwd — which for the documented `python3 install.py`
+    # from the repo root is the source tree itself. The probe would then
+    # import the tree it is installing *from* rather than the venv copy it is
+    # asking about, always report the tree's own version, and make the whole
+    # version gate below a permanent "already up to date" no-op. cwd is moved
+    # out of the repo as well so the answer does not depend on where the
+    # installer happened to be invoked.
     result = run_command(
-        [ctx.python_bin, "-c", "from kdictate import __version__; print(__version__)"],
-        quiet=True, check=False,
+        [ctx.python_bin, "-P", "-c",
+         "from kdictate import __version__; print(__version__)"],
+        quiet=True, check=False, cwd=ctx.home,
     )
     if result.returncode != 0:
         return None
@@ -779,7 +790,28 @@ def _write_backend_dropin(ctx: InstallContext) -> None:
 # Main
 # -------------------------------------------------------------------
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse the installer's own options."""
+
+    parser = argparse.ArgumentParser(
+        prog="install.py",
+        description="Install or update KDictate for the current user.",
+    )
+    parser.add_argument(
+        "--reconfigure",
+        action="store_true",
+        help="Re-run the configuration steps even when the installed version "
+             "already matches this tree. Use this to repair a broken install "
+             "-- a clobbered Ctrl+Space binding, a missing IBus engine "
+             "registration, a backend switch -- without having to change the "
+             "version number first.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
     if os.geteuid() == 0:
         die(
             "Run as your user, not root.\n\n"
@@ -799,20 +831,39 @@ def main() -> int:
 
     # Version gate first, before any other prompt: a system that is already
     # current should cost one command and no questions.
+    #
+    # --reconfigure exists because every configuration step below is
+    # idempotent and re-running them is the documented repair path (a Plasma
+    # reset clobbers the Ctrl+Space binding, the IBus preload list loses its
+    # entry, the backend needs switching). Gating those behind a version
+    # change would leave a user whose install is broken *at the current
+    # version* with no way to fix it short of editing app_metadata.py, so the
+    # exit below names the flag rather than just refusing.
     packaged = _is_packaged_install()
     installed = _installed_version(ctx, packaged)
-    if installed is not None and installed == __version__:
-        print(f"  Already at {__version__} — nothing to do.\n")
+    up_to_date = installed is not None and installed == __version__
+
+    if up_to_date and not args.reconfigure:
+        print(f"  Already at {__version__} — nothing to do.")
+        print("  Re-run with --reconfigure to repair the KDE/IBus wiring.\n")
         return 0
-    if not _prompt_update(installed):
+
+    if up_to_date:
+        print(f"  Already at {__version__}; reconfiguring at your request.\n")
+    elif not _prompt_update(installed):
         print("\n  Cancelled — nothing was changed.\n")
         return 0
+
+    # Reconfiguring at the same version has nothing to rebuild: the installed
+    # package already contains this tree's code, and a rebuild is the single
+    # most expensive step there is (whisper.cpp + Vulkan, minutes).
+    rebuild = packaged and not up_to_date
 
     # The two modes run different step sets; the count was previously
     # hardcoded to the source-install total, so a packaged run counted up to
     # 8/11 and stopped.
     global _TOTAL_STEPS  # noqa: PLW0603
-    _TOTAL_STEPS = 9 if packaged else 11
+    _TOTAL_STEPS = (9 if rebuild else 8) if packaged else 11
 
     gpu = _prompt_backend()
     if gpu:
@@ -822,10 +873,13 @@ def main() -> int:
         )
 
     print()
-    if packaged:
+    if packaged and rebuild:
         log("Packaged install detected — rebuilding the system package from "
             "this tree, then configuring it (model + per-user KDE wiring + "
             "system service; no venv).")
+    elif packaged:
+        log("Packaged install detected — reconfiguring only (model + per-user "
+            "KDE wiring + system service); the package is already current.")
 
     preflight_ibus()
     required = ["python3", "systemctl", "dconf"]
@@ -836,7 +890,7 @@ def main() -> int:
 
     pkg = ctx.script_dir / "packaging"
 
-    if packaged:
+    if rebuild:
         # The step that actually moves code onto the system, and the long one
         # (whisper.cpp + Vulkan). Signposted in the label because it runs
         # quiet like the rest, so there is nothing else to watch.

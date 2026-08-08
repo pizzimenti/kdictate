@@ -15,7 +15,6 @@ import unittest
 import numpy as np
 
 from kdictate.audio_common import (
-    NOISE_FLOOR_MAX_MULTIPLE,
     VADConfig,
     VADSegmenter,
 )
@@ -115,24 +114,51 @@ class NoisyRoomTest(unittest.TestCase):
         self.assertGreater(seconds, 5.0)
 
 
-class GateCeilingTest(unittest.TestCase):
-    def test_loud_room_cannot_push_the_gate_past_the_users_voice(self) -> None:
-        """The adaptive gate is clamped, so a loud room cannot mute a session.
+class LoudRoomTest(unittest.TestCase):
+    def test_gate_tracks_a_loud_room_instead_of_being_clamped_below_it(self) -> None:
+        """A gate ceiling used to clamp the threshold *below* the noise.
 
-        Ambient 5000 * margin 1.6 = 8000 would sit above the 6000 speech and
-        reject the entire recording. The ceiling (energy_threshold * 8 =
-        5600) keeps the gate below the voice.
+        The ceiling was `energy_threshold * 8` = 5600, which has nothing to do
+        with the level of the signal actually arriving. At ambient 7000 the
+        gate was pinned to 5600, below the room itself, so every block scored
+        as voiced and the utterance ran to max_utterance_s — exactly the bug
+        the adaptive gate exists to prevent.
+
+        7000 is used deliberately: it is the value that demonstrated the
+        clamped failure. The previous version of this test picked 5000, which
+        happens to sit just under the old ceiling, so it passed while the
+        shipped behaviour was broken.
         """
 
-        energy_threshold = 700.0
-        self.assertGreater(5000 * 1.6, energy_threshold * NOISE_FLOOR_MAX_MULTIPLE)
-
-        blocks = [_block(5000)] * 60 + [_block(6000)] * 100 + [_block(5000)] * 60
+        blocks = [_block(7000)] * 60 + [_block(12000)] * 100 + [_block(7000)] * 60
         committed = _run_vad(
-            blocks, energy_threshold=energy_threshold, noise_floor_margin=1.6,
+            blocks, energy_threshold=700.0, noise_floor_margin=1.6,
         )
 
         self.assertEqual(len(committed), 1)
+        # Ended by a real silence gap, not by running out of audio.
+        _pcm, seconds = committed[0]
+        self.assertLess(seconds, 5.0)
+
+
+class ShortUtteranceTest(unittest.TestCase):
+    def test_a_word_shorter_than_the_priming_window_is_still_transcribed(self) -> None:
+        """Priming must not swallow the whole recording.
+
+        Blocks are withheld until the noise floor is measurable. If the user
+        taps push-to-talk and says a single short word, the recording can end
+        before that point — and the held audio was then dropped outright, with
+        `total_blocks` still 0 so even the "no speech detected" warning could
+        not fire.
+        """
+
+        # 13 blocks ~= 390ms, below NOISE_FLOOR_MIN_BLOCKS (16).
+        blocks = [_block(9000)] * 13
+        committed = _run_vad(blocks, noise_floor_margin=1.6)
+
+        self.assertEqual(len(committed), 1)
+        pcm, _seconds = committed[0]
+        self.assertEqual(sum(len(c) for c in pcm), 13 * BLOCK_SAMPLES)
 
 
 class AdaptiveGateDefaultTest(unittest.TestCase):
