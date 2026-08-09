@@ -242,17 +242,60 @@ class QuietFailureTests(unittest.TestCase):
         # Tail only -- the whole log would defeat the point of running quiet.
         self.assertNotIn("line 1\n", printed)
 
-    def test_missing_build_dependencies_name_the_packages_and_the_command(self) -> None:
+    def test_missing_build_dependencies_are_reported_by_package_name(self) -> None:
         failed = subprocess.CompletedProcess(args=["python"], returncode=1, stdout="", stderr="")
         with mock.patch.object(install, "run_command", return_value=failed):
-            with self.assertRaises(SystemExit):
-                with mock.patch("sys.stderr", new=io.StringIO()) as err:
-                    install._require_build_dependencies()
-        printed = err.getvalue()
-        self.assertIn("python-build", printed)
-        self.assertIn("python-installer", printed)
+            self.assertEqual(
+                install._require_build_dependencies(),
+                ["python-build", "python-installer"],
+            )
 
-    def test_present_build_dependencies_do_not_raise(self) -> None:
+    def test_present_build_dependencies_report_nothing_missing(self) -> None:
         ok = subprocess.CompletedProcess(args=["python"], returncode=0, stdout="", stderr="")
         with mock.patch.object(install, "run_command", return_value=ok):
-            install._require_build_dependencies()
+            self.assertEqual(install._require_build_dependencies(), [])
+
+
+class EnsureBuildDependenciesTests(unittest.TestCase):
+    """The installer installs what the rebuild needs, rather than punting."""
+
+    def _patch_env(self, missing: list[str]):
+        self.enterContext(mock.patch.object(
+            install, "_require_build_dependencies", side_effect=[missing, []]))
+        self.enterContext(mock.patch.object(install, "_detect_distro", return_value="arch"))
+        self.enterContext(mock.patch.object(install.shutil, "which", return_value="/usr/bin/sudo"))
+
+    def test_accepting_installs_the_packages_without_asdeps(self) -> None:
+        """--asdeps is what made them vanish, so it must not be used.
+
+        makepkg installs build dependencies as dependencies. Once a build
+        finishes nothing depends on them, so they become orphans and the next
+        `pacman -Rns $(pacman -Qtdq)` sweep removes them — which is exactly
+        how this machine lost them two days after installing them. Rebuilding
+        is the normal update path here, so they are wanted explicitly.
+        """
+
+        self._patch_env(["python-build", "python-installer"])
+        ok = subprocess.CompletedProcess(args=["pacman"], returncode=0, stdout="", stderr="")
+        with mock.patch("builtins.input", return_value=""):
+            with mock.patch.object(install, "run_command", return_value=ok) as run:
+                install.ensure_build_dependencies()
+
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:4], ["sudo", "pacman", "-S", "--needed"])
+        self.assertIn("python-build", argv)
+        self.assertIn("python-installer", argv)
+        self.assertNotIn("--asdeps", argv)
+
+    def test_declining_stops_with_the_manual_command(self) -> None:
+        self._patch_env(["python-installer"])
+        with mock.patch("builtins.input", return_value="n"):
+            with self.assertRaises(SystemExit):
+                with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                    install.ensure_build_dependencies()
+        self.assertIn("python-installer", err.getvalue())
+
+    def test_nothing_missing_prompts_for_nothing(self) -> None:
+        with mock.patch.object(install, "_require_build_dependencies", return_value=[]):
+            with mock.patch("builtins.input", side_effect=AssertionError("prompted")):
+                install.ensure_build_dependencies()

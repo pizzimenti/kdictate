@@ -662,17 +662,13 @@ def _die_with_output(
     die(f"{message} (exit {result.returncode}). Last {min(tail, len(lines))} lines:\n\n{shown}")
 
 
-def _require_build_dependencies() -> None:
-    """Stop before a long build if makepkg's Python deps are missing.
+def _require_build_dependencies() -> list[str]:
+    """Return the package names makepkg needs that are not importable.
 
-    Deliberately *not* ``makepkg --syncdeps``: that hands the terminal to a
-    sudo password prompt and a pacman transaction in the middle of a step
-    whose output is suppressed, which is both startling and unreadable. A
-    missing dependency is a one-line fix the user should be told about up
-    front, before anything has been built or changed.
+    Pure detection — see :func:`ensure_build_dependencies` for the part that
+    acts on the answer.
     """
 
-    distro = _detect_distro()
     # -P and a cwd outside the checkout, for the same reason _installed_version
     # needs them: `python -c` puts the current directory on sys.path, and this
     # runs from a repo root that accumulates a `build/` directory from the very
@@ -689,12 +685,61 @@ def _require_build_dependencies() -> None:
             quiet=True, check=False, cwd=Path.home(),
         ).returncode != 0
     ]
-    if missing:
+    return missing
+
+
+def ensure_build_dependencies() -> None:
+    """Install the rebuild's build dependencies, with consent.
+
+    Called during preflight rather than from inside the rebuild step, so the
+    pacman transaction and its password prompt happen in the open, before the
+    quiet one-screen checklist starts — not buried inside a step whose output
+    is suppressed. That was why ``makepkg --syncdeps`` was dropped; refusing
+    to install them at all was an overcorrection that left the user to run a
+    command and start over.
+
+    Installed *without* ``--asdeps``, deliberately. makepkg marks them as
+    dependencies, so once a build finishes nothing depends on them, they
+    become orphans, and the next ``pacman -Rns $(pacman -Qtdq)`` sweep removes
+    them — observed here on 2026-08-09, two days after the build that pulled
+    them in. Rebuilding this package is the normal update path, so its build
+    dependencies are something the user genuinely wants kept.
+    """
+
+    missing = _require_build_dependencies()
+    if not missing:
+        return
+
+    distro = _detect_distro()
+    hint = _pkg_hint(distro, " ".join(missing))
+    print("  The package rebuild needs these build dependencies:\n")
+    for package in missing:
+        print(f"      {package}")
+    print()
+
+    if distro != "arch" or shutil.which("sudo") is None:
+        die(f"Install them first:\n\n      {hint}\n\n      Then re-run this installer.")
+
+    while True:
+        choice = input("  Install them now? [Y/n]: ").strip().lower()
+        if choice in ("", "y", "yes"):
+            break
+        if choice in ("n", "no"):
+            die(f"Install them first:\n\n      {hint}\n\n      Then re-run this installer.")
+
+    print()
+    result = run_command(
+        ["sudo", "pacman", "-S", "--needed", *missing], check=False,
+    )
+    print()
+    if result.returncode != 0:
+        die(f"Installing the build dependencies failed.\n\n      Try:  {hint}")
+
+    still_missing = _require_build_dependencies()
+    if still_missing:
         die(
-            "Missing build dependencies for the package rebuild:\n\n"
-            + "".join(f"        {package}\n" for package in missing)
-            + f"\n      Install:  {_pkg_hint(distro, ' '.join(missing))}\n\n"
-            "      Then re-run this installer."
+            "These are still not importable after installing:\n\n"
+            + "".join(f"        {package}\n" for package in still_missing)
         )
 
 
@@ -716,7 +761,17 @@ def rebuild_and_install_package(ctx: InstallContext) -> None:
 
     for tool in ("makepkg", "pacman", "sudo"):
         require_command(tool)
-    _require_build_dependencies()
+    # Belt and braces: ensure_build_dependencies() already resolved these
+    # during preflight, where a pacman prompt can be shown in the open. If
+    # anything is still missing by the time we get here, fail now rather than
+    # several minutes into a build that cannot succeed.
+    missing = _require_build_dependencies()
+    if missing:
+        die(
+            "Missing build dependencies for the package rebuild:\n\n"
+            + "".join(f"        {package}\n" for package in missing)
+            + f"\n      Install:  {_pkg_hint(_detect_distro(), ' '.join(missing))}"
+        )
 
     pkg_dir = ctx.script_dir / "packaging"
     result = run_command(["makepkg", "--force"], cwd=pkg_dir, quiet=True, check=False)
@@ -896,6 +951,11 @@ def main(argv: list[str] | None = None) -> int:
         required.insert(2, "rsync")
     for cmd in required:
         require_command(cmd)
+
+    # Before the checklist, so the pacman transaction and its password prompt
+    # happen in the open rather than inside a step whose output is suppressed.
+    if rebuild:
+        ensure_build_dependencies()
 
     pkg = ctx.script_dir / "packaging"
 
