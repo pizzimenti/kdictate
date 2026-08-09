@@ -265,14 +265,15 @@ class EnsureBuildDependenciesTests(unittest.TestCase):
         self.enterContext(mock.patch.object(install, "_detect_distro", return_value="arch"))
         self.enterContext(mock.patch.object(install.shutil, "which", return_value="/usr/bin/sudo"))
 
-    def test_accepting_installs_the_packages_without_asdeps(self) -> None:
-        """--asdeps is what made them vanish, so it must not be used.
+    def test_accepting_installs_the_packages_as_dependencies(self) -> None:
+        """Build tooling is installed --asdeps, because that is what it is.
 
-        makepkg installs build dependencies as dependencies. Once a build
-        finishes nothing depends on them, so they become orphans and the next
-        `pacman -Rns $(pacman -Qtdq)` sweep removes them — which is exactly
-        how this machine lost them two days after installing them. Rebuilding
-        is the normal update path here, so they are wanted explicitly.
+        Marking it explicit would stop an orphan sweep ever reclaiming it,
+        which is the installer overriding the machine's cleanup policy to
+        spare itself a round trip. Whether build tooling stays installed is
+        the user's call; all this has to guarantee is that a sweep never
+        leaves the next rebuild dead-ended, which re-installing on demand
+        already does.
         """
 
         self._patch_env(["python-build", "python-installer"])
@@ -282,10 +283,9 @@ class EnsureBuildDependenciesTests(unittest.TestCase):
                 install.ensure_build_dependencies()
 
         argv = run.call_args.args[0]
-        self.assertEqual(argv[:4], ["sudo", "pacman", "-S", "--needed"])
+        self.assertEqual(argv[:5], ["sudo", "pacman", "-S", "--needed", "--asdeps"])
         self.assertIn("python-build", argv)
         self.assertIn("python-installer", argv)
-        self.assertNotIn("--asdeps", argv)
 
     def test_declining_stops_with_the_manual_command(self) -> None:
         self._patch_env(["python-installer"])

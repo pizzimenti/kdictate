@@ -698,12 +698,15 @@ def ensure_build_dependencies() -> None:
     to install them at all was an overcorrection that left the user to run a
     command and start over.
 
-    Installed *without* ``--asdeps``, deliberately. makepkg marks them as
-    dependencies, so once a build finishes nothing depends on them, they
-    become orphans, and the next ``pacman -Rns $(pacman -Qtdq)`` sweep removes
-    them — observed here on 2026-08-09, two days after the build that pulled
-    them in. Rebuilding this package is the normal update path, so its build
-    dependencies are something the user genuinely wants kept.
+    Installed with ``--asdeps``, because that is what they are: tooling this
+    build needs, not something the user asked to have on their system.
+    Marking them explicit would keep an orphan sweep from ever reclaiming
+    them, which is the installer overriding the machine's cleanup policy to
+    protect itself from a round trip. Whether build tooling stays installed
+    is the user's call — ``makepkg --rmdeps`` and ``yay --removemake`` exist
+    precisely so it can be — and this only has to guarantee that a sweep
+    never leaves the next rebuild dead-ended, which re-installing on demand
+    already does.
     """
 
     missing = _require_build_dependencies()
@@ -729,7 +732,7 @@ def ensure_build_dependencies() -> None:
 
     print()
     result = run_command(
-        ["sudo", "pacman", "-S", "--needed", *missing], check=False,
+        ["sudo", "pacman", "-S", "--needed", "--asdeps", *missing], check=False,
     )
     print()
     if result.returncode != 0:
