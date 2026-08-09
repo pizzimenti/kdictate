@@ -673,11 +673,20 @@ def _require_build_dependencies() -> None:
     """
 
     distro = _detect_distro()
+    # -P and a cwd outside the checkout, for the same reason _installed_version
+    # needs them: `python -c` puts the current directory on sys.path, and this
+    # runs from a repo root that accumulates a `build/` directory from the very
+    # wheel step these dependencies exist to perform. Python then imports that
+    # directory as an implicit namespace package, `import build` succeeds, and
+    # the check reports python-build present when pacman has never heard of it
+    # -- so the user installs only what was reported, re-runs, and makepkg dies
+    # at `python -m build` anyway.
     missing = [
         package
         for module, package in (("build", "python-build"), ("installer", "python-installer"))
         if run_command(
-            [sys.executable, "-c", f"import {module}"], quiet=True, check=False,
+            [sys.executable, "-P", "-c", f"import {module}"],
+            quiet=True, check=False, cwd=Path.home(),
         ).returncode != 0
     ]
     if missing:

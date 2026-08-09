@@ -171,6 +171,29 @@ class InstalledVersionTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["cwd"], ctx.home)
 
 
+class BuildDependencyProbeTests(unittest.TestCase):
+    def test_probe_cannot_be_fooled_by_a_stray_build_directory(self) -> None:
+        """The probe must not import directories from the invocation cwd.
+
+        This runs from a repo root that accumulates a `build/` directory from
+        the very wheel step these dependencies exist to perform. `python -c`
+        puts the cwd on sys.path, so Python imports that directory as an
+        implicit namespace package and `import build` succeeds even when
+        python-build is not installed at all — reporting only *some* of the
+        missing packages, so the user installs those, re-runs, and makepkg
+        dies at `python -m build` anyway.
+        """
+
+        ok = subprocess.CompletedProcess(args=["python"], returncode=0, stdout="", stderr="")
+        with mock.patch.object(install, "run_command", return_value=ok) as run:
+            install._require_build_dependencies()
+
+        self.assertTrue(run.call_args_list, "probe never ran")
+        for call in run.call_args_list:
+            self.assertIn("-P", call.args[0])
+            self.assertNotEqual(call.kwargs.get("cwd"), None)
+
+
 class InstallerArgumentTests(unittest.TestCase):
     def test_reconfigure_flag_exists_and_defaults_off(self) -> None:
         """Repairing an install at the current version must be possible.
