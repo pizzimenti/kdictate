@@ -1,5 +1,55 @@
 # Changelog
 
+## 0.17.0
+
+Root-causes and fixes the "every install breaks dictation until reboot"
+pattern that ran through 0.14–0.16, and adds the observability that would
+have made it a one-round diagnosis.
+
+### The root cause
+
+`refresh_ibus_registry` killed the session's ibus-daemon on every install,
+then toggled KWin's `org.kde.kwin.VirtualKeyboard.enabled` D-Bus property to
+make KWin respawn the input-method stack. Plasma 6.7 removed that property,
+so the toggle failed on every install — *after* the daemon was already dead —
+and the fallback started a bare `ibus-daemon -r -d` with **no Wayland IM
+bridge** (`ibus-ui-gtk3 --enable-wayland-im`). Diagnosed 2026-08-10 on the
+0.16.0 install: the daemon recorded/decoded/emitted, the engine received the
+transcript and committed it (all logged), yet `ss -xp` showed no compositor
+or application attached to the new daemon's socket. Committed text had
+nowhere to go. Only a relogin — which lets KWin respawn the bridge — restored
+typing, which is why every version "worked after reboot."
+
+### Fixed
+
+- **The installer never kills a healthy ibus-daemon.** Shipping new engine
+  code needs only `ibus write-cache` plus clearing old engine processes
+  (0.16.0's guard); IBus respawns engines on demand. The daemon kill and the
+  defunct property toggle are gone.
+- **Missing-bridge repair via KWin.** When the Wayland IM bridge is already
+  absent (the broken-session shape older installers left behind), the
+  installer now relaunches the stack the supported way: flip the kwinrc
+  `[Wayland] InputMethod` entry and ask KWin to reconfigure — the same
+  mechanism the Virtual Keyboard KCM uses — then verify the bridge process
+  actually appeared.
+
+### Added
+
+- **Persistent install log** at `~/.local/state/kdictate/install.log`:
+  version transitions, every IBus process the installer touches (with PIDs),
+  bridge health decisions, repair outcomes, and the final self-check verdict.
+- **Post-install self-check.** The installer verifies the full chain —
+  daemon bus name, engine process, active engine, ibus-daemon, Wayland IM
+  bridge — and reports specific problems instead of printing an unconditional
+  success banner over a severed stack.
+- **Engine log identity.** Each engine instance logs under a numbered logger
+  (`…engine1`, `…engine2`), the process logs its PID at startup, and commits
+  log the enabled/focused/daemon-state gate they passed — so "committed but
+  nothing typed" is attributable to the correct instance and provably beyond
+  kdictate.
+
+The daemon runtime is otherwise unchanged from 0.16.0 (= 0.13.0 behaviour).
+
 ## 0.16.0
 
 Rolls the daemon back to its 0.13.0 behaviour. Everything in 0.14.0–0.14.2

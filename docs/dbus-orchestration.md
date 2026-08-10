@@ -16,7 +16,7 @@ systemd --user
 
 | Process | Started by | Lifecycle |
 |---------|-----------|-----------|
-| `ibus-ui-gtk3` | KWin (when VirtualKeyboard.enabled=true) | Lives for the desktop session |
+| `ibus-ui-gtk3` | KWin (from kwinrc `[Wayland] InputMethod`) | Lives for the desktop session |
 | `ibus-daemon` | `ibus-ui-gtk3` (--exec-daemon flag) | Lives as long as ibus-ui-gtk3 |
 | `ibus-engine-kdictate` | `ibus-daemon` (when engine is activated) | Lives as long as ibus-daemon |
 | `kdictate-daemon` | systemd user service | Independent of IBus |
@@ -72,14 +72,16 @@ pkill -f ibus-ui-gtk3
 IBUS_COMPONENT_PATH="$HOME/.local/share/ibus/component:/usr/share/ibus/component" \
     ibus write-cache
 
-# 4. Restart from KWin down (this relaunches ibus-ui-gtk3 → ibus-daemon → engine)
-gdbus call --session --dest org.kde.KWin --object-path /VirtualKeyboard \
-    --method org.freedesktop.DBus.Properties.Set \
-    org.kde.kwin.VirtualKeyboard enabled '<boolean false>'
+# 4. Restart from KWin down (this relaunches ibus-ui-gtk3 → ibus-daemon → engine).
+#    NOTE: the old org.kde.kwin.VirtualKeyboard.enabled toggle is gone as of
+#    Plasma 6.7; the supported relaunch is a kwinrc InputMethod flip — KWin
+#    acts on the *changed* value at each reconfigure.
+kwriteconfig6 --file ~/.config/kwinrc --group Wayland --key InputMethod --delete
+qdbus6 org.kde.KWin /KWin reconfigure
 sleep 1
-gdbus call --session --dest org.kde.KWin --object-path /VirtualKeyboard \
-    --method org.freedesktop.DBus.Properties.Set \
-    org.kde.kwin.VirtualKeyboard enabled '<boolean true>'
+kwriteconfig6 --file ~/.config/kwinrc --group Wayland --key InputMethod \
+    /usr/share/applications/org.freedesktop.IBus.Panel.Wayland.Gtk3.desktop
+qdbus6 org.kde.KWin /KWin reconfigure
 
 # 5. Wait for IBus to settle, then start daemon
 sleep 2

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import sys
 from typing import Any
 
@@ -28,7 +29,10 @@ def main() -> int:
     """Run the IBus engine main loop."""
 
     logger = configure_logging("kdictate.ibus", log_file="ibus-engine.log")
-    logger.info("Starting IBus engine process for %s", ENGINE_NAME)
+    # The pid ties this process's log lines to pgrep/ss output captured
+    # during an incident — multiple engine processes (one stale, one fresh)
+    # writing to the same log file was a real, observed failure shape.
+    logger.info("Starting IBus engine process for %s (pid %d)", ENGINE_NAME, os.getpid())
 
     try:
         ibus, bus, factory = _startup_engine_runtime()

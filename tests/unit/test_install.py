@@ -267,6 +267,8 @@ class StaleEngineProcessTests(unittest.TestCase):
     def setUp(self) -> None:
         self.enterContext(
             mock.patch.object(install.shutil, "which", return_value="/usr/bin/pgrep"))
+        # install_log appends to the real ~/.local/state; keep tests hermetic.
+        self.enterContext(mock.patch.object(install, "install_log"))
 
     @staticmethod
     def _pgrep(stdout: str) -> subprocess.CompletedProcess[str]:
@@ -326,6 +328,225 @@ class StaleEngineProcessTests(unittest.TestCase):
             with mock.patch.object(install, "run_command") as run:
                 self.assertEqual(install.clear_stale_engine_processes(), 0)
         run.assert_not_called()
+
+
+def _make_ctx(home: Path) -> install.InstallContext:
+    return install.InstallContext(
+        script_path=home / "install.py", script_dir=home,
+        home=home, runtime_dir=home / ".local/share/kdictate")
+
+
+class InstallLogTests(unittest.TestCase):
+    def test_appends_timestamped_line(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "state" / "install.log"
+            with mock.patch.object(install, "INSTALL_LOG_PATH", target):
+                install.install_log("first")
+                install.install_log("second")
+            lines = target.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].endswith(" first"))
+        self.assertTrue(lines[1].endswith(" second"))
+        # "YYYY-MM-DD HH:MM:SS message"
+        self.assertRegex(lines[0], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ")
+
+    def test_logging_failure_is_swallowed(self) -> None:
+        unwritable = Path("/proc/definitely/not/writable/install.log")
+        with mock.patch.object(install, "INSTALL_LOG_PATH", unwritable):
+            install.install_log("must not raise")
+
+
+class RefreshIbusRegistryTests(unittest.TestCase):
+    """The installer must never sever a working input-method stack.
+
+    Killing ibus-daemon mid-session severed KWin's Wayland IM bridge on
+    every 0.14-0.16 install (only a relogin recovered typing), so the
+    healthy path is now write-cache + engine clearing and nothing else.
+    """
+
+    def setUp(self) -> None:
+        self.enterContext(mock.patch.object(install, "install_log"))
+        self.run_command = self.enterContext(
+            mock.patch.object(install, "run_command", return_value=_completed()))
+        self.clear = self.enterContext(
+            mock.patch.object(install, "clear_stale_engine_processes", return_value=0))
+        self.repair = self.enterContext(
+            mock.patch.object(install, "repair_wayland_im_bridge"))
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.ctx = _make_ctx(Path(tmp.name))
+
+    def _commands(self) -> list[list[str]]:
+        return [list(call.args[0]) for call in self.run_command.call_args_list]
+
+    def test_healthy_stack_is_left_untouched(self) -> None:
+        with mock.patch.object(install, "_kwin_wayland_running", return_value=True), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=["100"]), \
+             mock.patch.object(install, "_ibus_daemon_pids", return_value=["200"]):
+            install.refresh_ibus_registry(self.ctx)
+
+        self.repair.assert_not_called()
+        self.clear.assert_called_once()
+        for argv in self._commands():
+            self.assertNotIn("pkill", argv[0], f"healthy path must not kill: {argv}")
+            self.assertNotEqual(argv[0], "ibus-daemon")
+        # write-cache still refreshes the registry.
+        self.assertTrue(any(argv[:2] == ["ibus", "write-cache"] for argv in self._commands()))
+
+    def test_missing_bridge_triggers_repair(self) -> None:
+        with mock.patch.object(install, "_kwin_wayland_running", return_value=True), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=[]), \
+             mock.patch.object(install, "_ibus_daemon_pids", return_value=["200"]):
+            install.refresh_ibus_registry(self.ctx)
+        self.repair.assert_called_once()
+
+    def test_non_kde_session_without_daemon_starts_plain_daemon(self) -> None:
+        with mock.patch.object(install, "_kwin_wayland_running", return_value=False), \
+             mock.patch.object(install, "_ibus_daemon_pids", return_value=[]):
+            install.refresh_ibus_registry(self.ctx)
+        self.repair.assert_not_called()
+        self.assertTrue(any(argv[0] == "ibus-daemon" for argv in self._commands()))
+
+    def test_non_kde_session_with_daemon_is_untouched(self) -> None:
+        with mock.patch.object(install, "_kwin_wayland_running", return_value=False), \
+             mock.patch.object(install, "_ibus_daemon_pids", return_value=["200"]):
+            install.refresh_ibus_registry(self.ctx)
+        self.repair.assert_not_called()
+        self.assertFalse(any(argv[0] == "ibus-daemon" for argv in self._commands()))
+
+
+class RepairWaylandImBridgeTests(unittest.TestCase):
+    """KWin relaunch of the IM stack via the kwinrc InputMethod flip."""
+
+    def setUp(self) -> None:
+        self.install_log = self.enterContext(mock.patch.object(install, "install_log"))
+        self.enterContext(mock.patch.object(install.time, "sleep"))
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        self.ctx = _make_ctx(self.home)
+        # A real file so KDE_VIRTUAL_KEYBOARD_DESKTOP.is_file() passes.
+        desktop = self.home / "org.freedesktop.IBus.Panel.Wayland.Gtk3.desktop"
+        desktop.write_text("[Desktop Entry]\n", encoding="utf-8")
+        self.enterContext(
+            mock.patch.object(install, "KDE_VIRTUAL_KEYBOARD_DESKTOP", desktop))
+        self.enterContext(
+            mock.patch.object(install.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"))
+
+    def _logged(self) -> str:
+        return " | ".join(str(call.args[0]) for call in self.install_log.call_args_list)
+
+    def test_missing_tools_abort_before_any_mutation(self) -> None:
+        with mock.patch.object(install.shutil, "which", return_value=None), \
+             mock.patch.object(install, "run_command") as run:
+            install.repair_wayland_im_bridge(self.ctx)
+        run.assert_not_called()
+        self.assertIn("skipped", self._logged())
+
+    def test_unreachable_kwin_aborts_before_killing_daemon(self) -> None:
+        with mock.patch.object(
+            install, "run_command", return_value=_completed(returncode=1)
+        ) as run, mock.patch.object(install, "_ibus_daemon_pids", return_value=["300"]):
+            install.repair_wayland_im_bridge(self.ctx)
+        commands = [list(call.args[0]) for call in run.call_args_list]
+        self.assertFalse(any(argv[0] == "pkill" for argv in commands))
+        self.assertIn("not reachable", self._logged())
+
+    def test_flip_sequence_and_success(self) -> None:
+        run = self.enterContext(
+            mock.patch.object(install, "run_command", return_value=_completed()))
+        with mock.patch.object(install, "_ibus_daemon_pids", return_value=["300"]), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=["400"]):
+            install.repair_wayland_im_bridge(self.ctx)
+
+        commands = [list(map(str, call.args[0])) for call in run.call_args_list]
+        # The bridgeless daemon is cleared so the relaunched bridge's
+        # --exec-daemon child does not collide with it.
+        self.assertTrue(any(argv[0] == "pkill" and "ibus-daemon" in argv for argv in commands))
+        # InputMethod is deleted, then restored — the change is what makes
+        # KWin relaunch the stack on reconfigure.
+        deletes = [argv for argv in commands
+                   if argv[0] == "kwriteconfig6" and "--delete" in argv]
+        restores = [argv for argv in commands
+                    if argv[0] == "kwriteconfig6" and str(install.KDE_VIRTUAL_KEYBOARD_DESKTOP) in argv]
+        self.assertEqual(len(deletes), 1)
+        self.assertEqual(len(restores), 1)
+        self.assertLess(commands.index(deletes[0]), commands.index(restores[0]))
+        reconfigures = [argv for argv in commands if "reconfigure" in argv]
+        self.assertGreaterEqual(len(reconfigures), 2)
+        self.assertIn("succeeded", self._logged())
+
+    def test_bridge_never_appearing_starts_fallback_daemon(self) -> None:
+        run = self.enterContext(
+            mock.patch.object(install, "run_command", return_value=_completed()))
+        with mock.patch.object(install, "_ibus_daemon_pids", return_value=[]), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=[]):
+            install.repair_wayland_im_bridge(self.ctx)
+        commands = [list(call.args[0]) for call in run.call_args_list]
+        self.assertTrue(any(argv[0] == "ibus-daemon" for argv in commands))
+        self.assertIn("FAILED", self._logged())
+
+
+class CheckImStackTests(unittest.TestCase):
+    """The self-check must catch a green-checklist install over a dead stack."""
+
+    def _run_check(
+        self, *,
+        daemons: list[str], kwin: bool, bridge: list[str], engines: list[str],
+        active_engine: str = DBUS_INTERFACE, name_has_owner: str = "(true,)",
+    ) -> list[str]:
+        def fake_run(command, **kwargs):
+            argv = [str(part) for part in command]
+            if argv[:2] == ["ibus", "engine"]:
+                return _completed(stdout=f"{active_engine}\n")
+            if argv[0] == "gdbus":
+                return _completed(stdout=f"{name_has_owner}\n")
+            raise AssertionError(f"unexpected command {argv}")
+
+        with mock.patch.object(install, "_ibus_daemon_pids", return_value=daemons), \
+             mock.patch.object(install, "_kwin_wayland_running", return_value=kwin), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=bridge), \
+             mock.patch.object(install, "_pgrep_pids", return_value=engines), \
+             mock.patch.object(install, "run_command", side_effect=fake_run), \
+             mock.patch.object(install.shutil, "which", return_value="/usr/bin/gdbus"):
+            return install.check_im_stack()
+
+    def test_healthy_stack_reports_no_problems(self) -> None:
+        problems = self._run_check(
+            daemons=["1"], kwin=True, bridge=["2"], engines=["3"])
+        self.assertEqual(problems, [])
+
+    def test_missing_bridge_is_reported_with_relogin_hint(self) -> None:
+        problems = self._run_check(
+            daemons=["1"], kwin=True, bridge=[], engines=["3"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("log out", problems[0])
+
+    def test_bridge_not_required_without_kwin_wayland(self) -> None:
+        problems = self._run_check(
+            daemons=["1"], kwin=False, bridge=[], engines=["3"])
+        self.assertEqual(problems, [])
+
+    def test_wrong_active_engine_is_reported(self) -> None:
+        problems = self._run_check(
+            daemons=["1"], kwin=True, bridge=["2"], engines=["3"],
+            active_engine="xkb:us::eng")
+        self.assertTrue(any("active IBus engine" in p for p in problems))
+
+    def test_unowned_daemon_bus_name_is_reported(self) -> None:
+        problems = self._run_check(
+            daemons=["1"], kwin=True, bridge=["2"], engines=["3"],
+            name_has_owner="(false,)")
+        self.assertTrue(any("does not own" in p for p in problems))
+
+    def test_dead_stack_reports_every_layer(self) -> None:
+        problems = self._run_check(
+            daemons=[], kwin=True, bridge=[], engines=[],
+            active_engine="", name_has_owner="(false,)")
+        self.assertGreaterEqual(len(problems), 4)
 
 
 class InstallerArgumentTests(unittest.TestCase):

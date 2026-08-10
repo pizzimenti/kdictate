@@ -63,10 +63,13 @@ sequence is run at the end of install.
   (so it now knows the InputMethod desktop file path), but does not spawn the
   input method process.
 
-- **`gdbus`/`qdbus` toggle `VirtualKeyboard.enabled` false → true alone, immediately
-  after install** — KWin still has the old (often null) `InputMethod` in memory
-  because `kwriteconfig6` only wrote to disk, so the toggle has nothing to launch.
-  The toggle becomes effective once KWin has been told to re-read kwinrc.
+- **`gdbus`/`qdbus` toggle of `VirtualKeyboard.enabled`** — the property no
+  longer exists.  Plasma 6.7's `org.kde.kwin.VirtualKeyboard` interface exposes
+  `available`/`active`/`visible`/`mode`, none of which relaunch the InputMethod.
+  Installers ≤0.16.0 relied on this toggle; when Plasma removed the property the
+  toggle failed *after* the daemon had already been killed, the fallback started
+  a bare `ibus-daemon -r -d` with no Wayland IM bridge, and every install broke
+  typing until relogin (root-caused 2026-08-10).
 
 - **`ibus restart`** — sends `Exit(restart=true)`, which causes ibus-daemon to
   re-exec itself in place with the same args.  KWin sees no D-Bus name owner
@@ -78,37 +81,37 @@ sequence is run at the end of install.
   compositor Wayland socket with `zwp_input_method_v2` is not available to
   non-KWin-spawned processes.
 
-### Working hot-start sequence (used by install.py)
+### Working relaunch sequence (used by install.py ≥0.17.0)
+
+KWin (re)launches the command named by kwinrc `[Wayland] InputMethod` on
+`reconfigure` whenever the *value changes*.  Flipping the key off and back on is
+therefore the supported no-logout way to a fresh
+`ibus-ui-gtk3 --enable-wayland-im --exec-daemon` stack — the same mechanism the
+Virtual Keyboard KCM uses when the user switches input methods:
 
 ```sh
-# 1. Tell KWin to reload kwinrc so it picks up the InputMethod desktop file
-#    that kwriteconfig6 just wrote.
-qdbus6 org.kde.KWin /KWin reconfigure
+# 0. Only when the bridge is already missing!  A healthy session must never
+#    have its ibus-daemon killed — engines respawn on demand, so upgrades
+#    need only `ibus write-cache` + killing kdictate engine processes.
 
-# 2. Kill any stale ibus-daemon so the toggle below has a clean slate.  Without
-#    this, a daemon already registered on the session bus (especially one
-#    started with --panel disable) makes the toggle a no-op — KWin sees the
-#    name still owned and doesn't cold-start the InputMethod desktop file.
+# 1. Clear the bridgeless daemon so the relaunched bridge's --exec-daemon
+#    child does not collide with it.
 pkill -x ibus-daemon
 sleep 0.5
 
-# 3. Toggle KWin's VirtualKeyboard.enabled from false to true.  This is the
-#    signal that makes KWin invoke the InputMethod desktop file:
-#       ibus-ui-gtk3 --enable-wayland-im --exec-daemon …
-#    which spawns both the daemon and the Wayland IM bridge in one shot,
-#    registers the input method with the compositor, and sets
-#    VirtualKeyboard.available=true.
-qdbus6 --literal org.kde.KWin /VirtualKeyboard \
-    org.freedesktop.DBus.Properties.Set \
-    org.kde.kwin.VirtualKeyboard enabled false
-sleep 0.5
-qdbus6 --literal org.kde.KWin /VirtualKeyboard \
-    org.freedesktop.DBus.Properties.Set \
-    org.kde.kwin.VirtualKeyboard enabled true
+# 2. Flip the InputMethod entry off and back on; each reconfigure makes KWin
+#    act on the changed value, and the restore relaunches the full stack.
+kwriteconfig6 --file ~/.config/kwinrc --group Wayland --key InputMethod --delete
+qdbus6 org.kde.KWin /KWin reconfigure
+sleep 1
+kwriteconfig6 --file ~/.config/kwinrc --group Wayland --key InputMethod \
+    /usr/share/applications/org.freedesktop.IBus.Panel.Wayland.Gtk3.desktop
+qdbus6 org.kde.KWin /KWin reconfigure
+
+# 3. Verify: an `ibus-ui-gtk3 --enable-wayland-im` process must appear.
+pgrep -af 'ibus-ui-gtk3.*--enable-wayland-im'
 ```
 
-The full sequence is required — the `reconfigure` makes the toggle meaningful,
-and the `pkill` makes it cold-start instead of no-op.  If neither `qdbus6` nor
-`qdbus` is available on the host, there is no in-session recovery: the new
-`InputMethod` setting takes effect at the next login when KWin re-reads kwinrc
-during startup.
+If neither `qdbus6` nor `qdbus` is available on the host, there is no
+in-session recovery: the new `InputMethod` setting takes effect at the next
+login when KWin re-reads kwinrc during startup.
