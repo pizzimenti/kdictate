@@ -482,6 +482,55 @@ def register_global_shortcut(ctx: InstallContext) -> None:
     write_home_file(ctx, shortcut_file, content)
 
 
+_ENGINE_PROCESS_PATTERN = "(libexec|bin)/ibus-engine-kdictate"
+
+
+def clear_stale_engine_processes() -> int:
+    """Terminate kdictate IBus engine processes so IBus respawns them fresh.
+
+    An engine process reads its script once at spawn time and keeps executing
+    what it loaded. Upgrading the package replaces that file on disk without
+    touching the running process, so afterwards the live engine is still
+    running the *previous* version's code — and the copy IBus spawns for the
+    new session sits alongside it. Both are on the session bus receiving the
+    daemon's ``FinalTranscript`` broadcast, while only one can hold the
+    focused input context, so a transcript can be delivered to an engine that
+    is not the one able to commit it.
+
+    The ``pkill -x ibus-daemon`` further down does not reach these: ``-x``
+    matches the process name exactly, and an engine runs as
+    ``python …/ibus-engine-kdictate``. Killing the daemon *orphans* the
+    engines rather than reaping them — which is why they also survive an
+    ``ibus restart``, observed here with an engine that outlived both.
+
+    Returns how many processes were signalled. Safe to call whenever the
+    on-disk engine has changed: IBus spawns an engine on demand, so the next
+    activation gets a fresh one running the installed code.
+    """
+
+    if shutil.which("pgrep") is None or shutil.which("pkill") is None:
+        return 0
+
+    uid = str(os.getuid())
+    # Restricted to this user, and matched on the executed path rather than a
+    # bare name, so nothing outside this install's own engines is touched.
+    select = ["-u", uid, "-f", _ENGINE_PROCESS_PATTERN]
+
+    found = run_command(["pgrep", *select], quiet=True, check=False)
+    pids = [tok for tok in found.stdout.split() if tok.isdigit()]
+    if not pids:
+        return 0
+
+    run_command(["pkill", *select], quiet=True, check=False)
+    time.sleep(0.5)
+
+    survivors = run_command(["pgrep", *select], quiet=True, check=False)
+    if [tok for tok in survivors.stdout.split() if tok.isdigit()]:
+        run_command(["pkill", "-9", *select], quiet=True, check=False)
+
+    return len(pids)
+
+
 def refresh_ibus_registry(ctx: InstallContext) -> None:
     ibus_env = {
         "IBUS_COMPONENT_PATH": (
@@ -490,6 +539,10 @@ def refresh_ibus_registry(ctx: InstallContext) -> None:
     }
     # Update IBus component registry so ibus-daemon knows about the new engine.
     run_command(["ibus", "write-cache"], env=ibus_env, quiet=True)
+
+    # Clear engine processes left over from before this upgrade, before the
+    # daemon is restarted below.
+    clear_stale_engine_processes()
 
     # Tell KWin to re-read kwinrc so it picks up the InputMethod key written
     # by configure_kwin_input_method in the same install run.  Without this,

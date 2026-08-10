@@ -45,6 +45,20 @@
   machine where a package had been built, which a packaged install now always
   does. Fixed with `testpaths`/`norecursedirs` rather than per-test skips.
 
+- **Upgrading no longer leaves stale IBus engine processes behind.** An engine
+  reads its script once at spawn and keeps executing what it loaded, so
+  replacing the package left the running engine on the *previous* version's
+  code while IBus spawned a second copy alongside it. Both sit on the session
+  bus receiving the daemon's `FinalTranscript` broadcast, but only one can
+  hold the focused input context — so a transcript could be delivered to an
+  engine unable to commit it, and dictation silently produced no text until
+  the next reboot. `refresh_ibus_registry` already killed `ibus-daemon`, but
+  with `pkill -x`, an exact *name* match that never reached
+  `python …/ibus-engine-kdictate`; killing the daemon orphaned the engines
+  rather than reaping them, which is why they survived `ibus restart` too.
+  Observed here with an engine that outlived both an upgrade and a restart.
+  The kill is scoped to the invoking user and matched on the executed path.
+
 ### Changed
 
 - **Removed the adaptive gate's ceiling.** It was `energy_threshold * 8`, and

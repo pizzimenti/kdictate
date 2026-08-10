@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import subprocess
 import unittest
 from pathlib import Path
@@ -192,6 +193,73 @@ class BuildDependencyProbeTests(unittest.TestCase):
         for call in run.call_args_list:
             self.assertIn("-P", call.args[0])
             self.assertNotEqual(call.kwargs.get("cwd"), None)
+
+
+class StaleEngineProcessTests(unittest.TestCase):
+    """Upgrading replaces the engine on disk; running copies keep the old code."""
+
+    def setUp(self) -> None:
+        self.enterContext(
+            mock.patch.object(install.shutil, "which", return_value="/usr/bin/pgrep"))
+
+    @staticmethod
+    def _pgrep(stdout: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["pgrep"], returncode=0 if stdout.strip() else 1,
+            stdout=stdout, stderr="")
+
+    def test_nothing_running_signals_nothing(self) -> None:
+        with mock.patch.object(
+            install, "run_command", return_value=self._pgrep("")
+        ) as run:
+            self.assertEqual(install.clear_stale_engine_processes(), 0)
+        # Only the probe ran; no kill was issued.
+        self.assertEqual(len(run.call_args_list), 1)
+        self.assertEqual(run.call_args_list[0].args[0][0], "pgrep")
+
+    def test_running_engines_are_terminated_and_counted(self) -> None:
+        side_effect = [
+            self._pgrep("1975\n757291\n"),   # initial probe: two engines
+            self._pgrep(""),                 # pkill
+            self._pgrep(""),                 # survivor probe: none left
+        ]
+        with mock.patch.object(install, "run_command", side_effect=side_effect) as run:
+            self.assertEqual(install.clear_stale_engine_processes(), 2)
+        self.assertEqual(run.call_args_list[1].args[0][0], "pkill")
+
+    def test_survivors_are_force_killed(self) -> None:
+        side_effect = [
+            self._pgrep("1975\n"),
+            self._pgrep(""),
+            self._pgrep("1975\n"),   # ignored SIGTERM
+            self._pgrep(""),
+        ]
+        with mock.patch.object(install, "run_command", side_effect=side_effect) as run:
+            install.clear_stale_engine_processes()
+        self.assertIn("-9", run.call_args_list[-1].args[0])
+
+    def test_selection_is_scoped_to_this_user_and_an_executed_path(self) -> None:
+        """The kill must not be able to reach anything but our own engines.
+
+        Matching a bare name would also hit unrelated processes that merely
+        mention it; not scoping by uid would reach other users' engines.
+        """
+
+        with mock.patch.object(
+            install, "run_command", return_value=self._pgrep("")
+        ) as run:
+            install.clear_stale_engine_processes()
+
+        argv = run.call_args_list[0].args[0]
+        self.assertIn("-u", argv)
+        self.assertIn(str(os.getuid()), argv)
+        self.assertIn("/ibus-engine-kdictate", argv[-1])
+
+    def test_missing_pgrep_is_not_fatal(self) -> None:
+        with mock.patch.object(install.shutil, "which", return_value=None):
+            with mock.patch.object(install, "run_command") as run:
+                self.assertEqual(install.clear_stale_engine_processes(), 0)
+        run.assert_not_called()
 
 
 class InstallerArgumentTests(unittest.TestCase):
