@@ -588,7 +588,9 @@ class SessionScopingTests(unittest.TestCase):
             proc = mock.Mock()
             data = environs.get(spec)
             if data is None:
-                proc.read_bytes.side_effect = OSError("gone")
+                proc.read_bytes.side_effect = FileNotFoundError("gone")
+            elif data == b"<unreadable>":
+                proc.read_bytes.side_effect = PermissionError("capability-protected")
             else:
                 proc.read_bytes.return_value = data
             return proc
@@ -609,6 +611,20 @@ class SessionScopingTests(unittest.TestCase):
         }
         self.assertEqual(
             self._filter(["1", "2", "3", "4"], environs), ["1", "3"])
+
+    def test_capability_protected_process_is_kept(self) -> None:
+        """Alive-but-unreadable environ means keep, never drop.
+
+        File capabilities (kwin_wayland ships cap_sys_nice) make a process
+        non-dumpable, so /proc/<pid>/environ is EACCES even for its own
+        user. Dropping it made every KDE session read as "no KWin": the
+        bridge repair and the bridge self-check silently disabled
+        themselves, and a broken 0.17.0 install self-checked "healthy"
+        (observed 2026-08-10).
+        """
+
+        environs = {"/proc/1/environ": b"<unreadable>"}
+        self.assertEqual(self._filter(["1"], environs), ["1"])
 
     def test_display_only_process_matches_a_wayland_session(self) -> None:
         """Each display variable matches its own value, not each other's.

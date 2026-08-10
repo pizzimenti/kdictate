@@ -666,13 +666,23 @@ def _pids_in_current_session(pids: list[str]) -> list[str]:
     for pid in pids:
         try:
             entries = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        except PermissionError:
+            # Alive but unreadable — file capabilities make a process
+            # non-dumpable and its environ 0400-root even for its own user.
+            # kwin_wayland ships with cap_sys_nice, so this is the *normal*
+            # case for the compositor probe: unclassifiable means keep, or
+            # every KDE session reads as "no KWin" and the bridge repair and
+            # self-check silently disable themselves (observed 2026-08-10:
+            # a broken install self-checked "healthy" this way).
+            kept.append(pid)
         except OSError:
             continue  # process exited between pgrep and now
-        has_display = any(
-            entry.startswith((b"WAYLAND_DISPLAY=", b"DISPLAY=")) for entry in entries
-        )
-        if not has_display or ours.intersection(entries):
-            kept.append(pid)
+        else:
+            has_display = any(
+                entry.startswith((b"WAYLAND_DISPLAY=", b"DISPLAY=")) for entry in entries
+            )
+            if not has_display or ours.intersection(entries):
+                kept.append(pid)
     return kept
 
 
@@ -762,10 +772,16 @@ def refresh_ibus_registry(ctx: InstallContext) -> None:
     if not _kwin_wayland_running():
         # Non-KDE-Wayland session: there is no bridge to manage. Make sure a
         # daemon exists for the cold-start case and leave everything else
-        # alone.
+        # alone. Both outcomes are logged — a silent branch here is how a
+        # mis-detected session once skipped the bridge repair unnoticed.
         if not daemons:
             install_log("no ibus-daemon and no kwin_wayland; starting plain ibus-daemon")
             run_command(["ibus-daemon", "-r", "-d"], quiet=True, check=False)
+        else:
+            install_log(
+                f"no kwin_wayland in this session; ibus-daemon pid "
+                f"{','.join(daemons)} present, leaving it untouched"
+            )
         return
 
     if bridge and daemons:
