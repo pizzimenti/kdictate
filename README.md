@@ -198,7 +198,6 @@ See `docs/gpu-mode.md` for architecture details and benchmark results.
 - `--condition-on-previous-text/--no-condition-on-previous-text`: daemon defaults to `False` to reduce cascading hallucinations.
 - `--no-speech-threshold`: Whisper-side non-speech rejection. The daemon defaults to `0.6`.
 - `--energy-threshold`, `--start-speech-ms`, `--silence-ms`, `--max-utterance-s`: live CLI utterance-boundary controls.
-- `--noise-floor-margin`: how far above the measured ambient noise floor a block must sit to count as speech. **Defaults to `0` — the adaptive gate is off** and `--energy-threshold` is used alone. Set it (try `1.6`) to opt in: the gate becomes `max(--energy-threshold, noise_floor * margin)`, capped at 8x `--energy-threshold`. The noise floor is measured and logged either way, so tune against the `recording ended:` line — the margin only helps if `noise_floor` sits well below your speaking level. On hardware where a push-to-talk session is short and mostly speech, the estimate tracks the speaker rather than the room and the margin is best left at `0`.
 - `--task transcribe|translate`: keep original language vs force English output (CLI mode only).
 - `--decode-workers`, `--diag`, `--diag-interval-s`: parallelism and diagnostics (CLI mode only).
 - Runtime control/VAD polling now uses 150ms wait intervals to reduce idle wakeups without materially affecting dictation latency.
