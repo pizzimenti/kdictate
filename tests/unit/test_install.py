@@ -518,10 +518,28 @@ class RepairWaylandImBridgeTests(unittest.TestCase):
                     and str(install.KDE_VIRTUAL_KEYBOARD_DESKTOP) in argv]
         self.assertEqual(len(restores), 1)
 
+    def test_surviving_daemon_aborts_the_flip(self) -> None:
+        """A daemon that shrugs off SIGKILL would collide with the relaunched
+        bridge's --exec-daemon child — abort rather than flip kwinrc for a
+        repair that cannot work."""
+
+        run = self.enterContext(
+            mock.patch.object(install, "run_command", return_value=_completed()))
+        self.enterContext(mock.patch.object(install.os, "kill"))
+        with mock.patch.object(install, "_ibus_daemon_pids", return_value=["300"]), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=[]), \
+             mock.patch.object(install, "_pid_alive", return_value=True):
+            install.repair_wayland_im_bridge(self.ctx)
+
+        commands = [list(call.args[0]) for call in run.call_args_list]
+        self.assertFalse(any(argv[0] == "kwriteconfig6" for argv in commands))
+        self.assertIn("survived", self._logged())
+
     def test_flip_sequence_and_success(self) -> None:
         run = self.enterContext(
             mock.patch.object(install, "run_command", return_value=_completed()))
         kill = self.enterContext(mock.patch.object(install.os, "kill"))
+        self.enterContext(mock.patch.object(install, "_pid_alive", return_value=False))
         # Recheck after the probe still sees no bridge; the post-flip poll does.
         with mock.patch.object(install, "_ibus_daemon_pids", return_value=["300"]), \
              mock.patch.object(install, "_wayland_bridge_pids",
@@ -761,15 +779,28 @@ class EnsureBuildDependenciesTests(unittest.TestCase):
 
         self._patch_env(["python-build", "python-installer"])
         ok = subprocess.CompletedProcess(args=["pacman"], returncode=0, stdout="", stderr="")
-        with mock.patch("builtins.input", return_value=""):
-            with mock.patch.object(install, "run_command", return_value=ok) as run:
-                installed = install.ensure_build_dependencies()
+        # The removal list is the -Qq diff of the transaction: it includes
+        # the dependency pacman pulled in (pyproject-hooks) that the probe
+        # could never know about, and nothing that predates the transaction.
+        snapshots = iter([
+            {"glibc", "python"},
+            {"glibc", "python", "python-build", "python-installer",
+             "python-pyproject-hooks"},
+        ])
+        with mock.patch("builtins.input", return_value=""), \
+             mock.patch.object(install, "_installed_package_set",
+                               side_effect=lambda: next(snapshots)), \
+             mock.patch.object(install, "run_command", return_value=ok) as run:
+            installed = install.ensure_build_dependencies()
 
         argv = run.call_args.args[0]
         self.assertEqual(argv[:5], ["sudo", "pacman", "-S", "--needed", "--asdeps"])
         self.assertIn("python-build", argv)
         self.assertIn("python-installer", argv)
-        self.assertEqual(installed, ["python-build", "python-installer"])
+        self.assertEqual(
+            installed,
+            ["python-build", "python-installer", "python-pyproject-hooks"],
+        )
 
     def test_declining_stops_with_the_manual_command(self) -> None:
         self._patch_env(["python-installer"])
@@ -802,7 +833,10 @@ class RemoveBuildDependenciesTests(unittest.TestCase):
             install.remove_build_dependencies(["python-build", "python-wheel"])
 
         argv = run.call_args.args[0]
-        self.assertEqual(argv[:4], ["sudo", "pacman", "-Rns", "--noconfirm"])
+        # Plain -R: the list is the complete transaction diff, so recursive
+        # -s is unnecessary — and could walk past the transaction boundary
+        # into pre-existing dependency chains.
+        self.assertEqual(argv[:4], ["sudo", "pacman", "-R", "--noconfirm"])
         self.assertEqual(argv[4:], ["python-build", "python-wheel"])
 
     def test_failed_removal_is_logged_but_never_fatal(self) -> None:

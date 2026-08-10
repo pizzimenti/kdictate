@@ -44,12 +44,16 @@ typing, which is why every version "worked after reboot."
   success banner over a severed stack.
 - **Build dependencies are removed after a successful rebuild** (the
   `makepkg --rmdeps` half, completing the hand-rolled `--syncdeps` from
-  0.14.1). Only packages this run installed are removed — anything already
-  on the machine is out of reach by construction — so rebuilds no longer
-  leave `python-build`/`python-installer`/`python-wheel` behind as orphans.
-  The consent prompt announces the removal up front; a refused removal is
-  logged and never fails the install. The preflight probe now also checks
-  `python-wheel`, aligning it with the PKGBUILD's makedepends.
+  0.14.1). The removal list is the exact `pacman -Qq` diff of the install
+  transaction — dependencies included, pre-existing packages out of reach
+  by construction — so in the normal case rebuilds no longer leave
+  `python-build`/`python-installer`/`python-wheel` behind as orphans. The
+  consent prompt announces the removal up front. Best-effort by design: if
+  pacman refuses the removal, the packages stay behind as `--asdeps`
+  orphans for the next sweep and `install.log` records why; a failed
+  cleanup never fails an otherwise-successful install. The preflight probe
+  now also checks `python-wheel`, aligning it with the PKGBUILD's
+  makedepends.
 - **Engine log identity.** Each engine instance logs under a numbered logger
   (`…engine1`, `…engine2`), the process logs its PID at startup, and commits
   log the enabled/focused/daemon-state gate they passed — so "committed but

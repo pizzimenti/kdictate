@@ -685,7 +685,20 @@ def _ibus_daemon_pids() -> list[str]:
 
 
 def _kwin_wayland_running() -> bool:
-    return bool(_pgrep_pids("kwin_wayland", exact_name=True))
+    # Session-scoped like the other probes: an X11 session running this
+    # installer must not mistake a *different* session's kwin_wayland for
+    # its own compositor.
+    return bool(_pids_in_current_session(_pgrep_pids("kwin_wayland", exact_name=True)))
+
+
+def _pid_alive(pid: str) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _qdbus_bin() -> str | None:
@@ -830,7 +843,29 @@ def repair_wayland_im_bridge(ctx: InstallContext) -> None:
                 os.kill(int(pid), signal.SIGTERM)
             except (ProcessLookupError, PermissionError):
                 pass
-        time.sleep(0.5)
+        # Confirm the exit rather than assuming it: a daemon that survives
+        # SIGTERM would collide with the relaunched bridge's --exec-daemon
+        # child, and the poll at the bottom could then declare success over
+        # a stack that is about to fall apart again.
+        for _ in range(10):
+            stale = [pid for pid in stale if _pid_alive(pid)]
+            if not stale:
+                break
+            time.sleep(0.2)
+        if stale:
+            for pid in stale:
+                try:
+                    os.kill(int(pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            time.sleep(0.2)
+            stale = [pid for pid in stale if _pid_alive(pid)]
+        if stale:
+            install_log(
+                f"bridge repair aborted: ibus-daemon pid {','.join(stale)} "
+                "survived SIGKILL"
+            )
+            return
 
     kwinrc = ctx.home / ".config" / "kwinrc"
 
@@ -1113,6 +1148,7 @@ def ensure_build_dependencies() -> list[str]:
             die(f"Install them first:\n\n      {hint}\n\n      Then re-run this installer.")
 
     print()
+    before = _installed_package_set()
     result = run_command(
         ["sudo", "pacman", "-S", "--needed", "--asdeps", *missing], check=False,
     )
@@ -1127,17 +1163,33 @@ def ensure_build_dependencies() -> list[str]:
             + "".join(f"        {package}\n" for package in still_missing)
         )
 
-    install_log(f"installed build dependencies for this run: {', '.join(missing)}")
-    return missing
+    # What this run actually put on the system is the -Qq diff around the
+    # transaction, not the probe list: --needed skips anything that appeared
+    # since the probe (so it is never claimed), and the diff also captures
+    # the dependencies pacman pulled in alongside — which the probe cannot
+    # know about. pacman holds the db lock while our transaction runs, so
+    # nothing else can interleave installs into the window.
+    installed = sorted(_installed_package_set() - before)
+    if installed:
+        install_log(f"installed build dependencies for this run: {', '.join(installed)}")
+    return installed
+
+
+def _installed_package_set() -> set[str]:
+    result = run_command(["pacman", "-Qq"], quiet=True, check=False)
+    if result.returncode != 0:
+        return set()
+    return set(result.stdout.split())
 
 
 def remove_build_dependencies(packages: list[str]) -> None:
     """Remove build deps this run installed — the ``makepkg --rmdeps`` half.
 
-    Only ever called with :func:`ensure_build_dependencies`'s return value,
-    so anything already on the machine before this run is out of reach by
-    construction. ``-Rns`` also reclaims their own now-unneeded dependency
-    trees, matching what an orphan sweep would eventually have done.
+    Only ever called with :func:`ensure_build_dependencies`'s return value:
+    the exact ``pacman -Qq`` diff of its transaction, dependencies included.
+    Because that list is complete, a plain ``-R`` suffices — no recursive
+    ``-s``, which could otherwise walk past the transaction boundary into
+    dependency chains that were already on the machine.
 
     Best-effort: if pacman refuses (something started depending on one of
     them mid-build, say), the packages just stay behind as ``--asdeps``
@@ -1148,7 +1200,7 @@ def remove_build_dependencies(packages: list[str]) -> None:
     if not packages:
         return
     result = run_command(
-        ["sudo", "pacman", "-Rns", "--noconfirm", *packages],
+        ["sudo", "pacman", "-R", "--noconfirm", *packages],
         quiet=True, check=False,
     )
     if result.returncode == 0:
