@@ -23,6 +23,7 @@ import argparse
 import datetime
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -651,14 +652,16 @@ def _pids_in_current_session(pids: list[str]) -> list[str]:
     classify.
     """
 
-    display = os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")
-    if not display:
-        return pids
-
+    # Each variable is matched against its own value: a session exporting
+    # WAYLAND_DISPLAY=wayland-0 *and* DISPLAY=:0 must accept a process that
+    # carries either one.
     ours = {
-        f"WAYLAND_DISPLAY={display}".encode(),
-        f"DISPLAY={display}".encode(),
+        f"{key}={value}".encode()
+        for key in ("WAYLAND_DISPLAY", "DISPLAY")
+        if (value := os.environ.get(key))
     }
+    if not ours:
+        return pids
     kept: list[str] = []
     for pid in pids:
         try:
@@ -730,6 +733,15 @@ def refresh_ibus_registry(ctx: InstallContext) -> None:
     # Clear engine processes left over from before this upgrade so the next
     # activation spawns a fresh engine running the just-installed code.
     clear_stale_engine_processes()
+
+    # Without pgrep, every probe below reads as "nothing running" and a
+    # healthy session would be misclassified as a cold start — whose
+    # ``ibus-daemon -r`` (--replace) would evict the compositor-managed
+    # daemon and sever the very stack this function exists to protect.
+    # Unknown state gets hands-off, not repair.
+    if shutil.which("pgrep") is None:
+        install_log("pgrep unavailable; IM stack state unknown, leaving it untouched")
+        return
 
     bridge = _wayland_bridge_pids()
     daemons = _ibus_daemon_pids()
@@ -807,15 +819,17 @@ def repair_wayland_im_bridge(ctx: InstallContext) -> None:
         return
 
     # A bare ibus-daemon (the broken-session shape this repairs) would
-    # collide with the daemon the relaunched bridge execs. Clear it first.
+    # collide with the daemon the relaunched bridge execs. Clear it first —
+    # by the exact session-filtered PIDs, not a UID-wide pkill that would
+    # also take down other sessions' healthy daemons.
     stale = _ibus_daemon_pids()
     if stale:
-        if shutil.which("pkill") is None:
-            install_log("bridge repair skipped: stale ibus-daemon present but pkill unavailable")
-            return
         install_log(f"killing bridgeless ibus-daemon pid {','.join(stale)}")
-        run_command(["pkill", "-u", str(os.getuid()), "-x", "ibus-daemon"],
-                    quiet=True, check=False)
+        for pid in stale:
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
         time.sleep(0.5)
 
     kwinrc = ctx.home / ".config" / "kwinrc"

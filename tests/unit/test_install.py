@@ -416,6 +416,19 @@ class RefreshIbusRegistryTests(unittest.TestCase):
         self.repair.assert_not_called()
         self.assertFalse(any(argv[0] == "ibus-daemon" for argv in self._commands()))
 
+    def test_missing_pgrep_means_unknown_state_and_hands_off(self) -> None:
+        """No probes → no verdict. A healthy session must not be misread as a
+        cold start: ``ibus-daemon -r`` (--replace) would evict the
+        compositor-managed daemon and sever the stack."""
+
+        with mock.patch.object(install.shutil, "which",
+                               side_effect=lambda name: None if name == "pgrep" else f"/usr/bin/{name}"):
+            install.refresh_ibus_registry(self.ctx)
+        self.repair.assert_not_called()
+        for argv in self._commands():
+            self.assertNotEqual(argv[0], "ibus-daemon")
+            self.assertNotEqual(argv[0], "pkill")
+
 
 class RepairWaylandImBridgeTests(unittest.TestCase):
     """KWin relaunch of the IM stack via the kwinrc InputMethod flip."""
@@ -449,10 +462,10 @@ class RepairWaylandImBridgeTests(unittest.TestCase):
     def test_unreachable_kwin_aborts_before_killing_daemon(self) -> None:
         with mock.patch.object(
             install, "run_command", return_value=_completed(returncode=1)
-        ) as run, mock.patch.object(install, "_ibus_daemon_pids", return_value=["300"]):
+        ), mock.patch.object(install, "_ibus_daemon_pids", return_value=["300"]), \
+             mock.patch.object(install.os, "kill") as kill:
             install.repair_wayland_im_bridge(self.ctx)
-        commands = [list(call.args[0]) for call in run.call_args_list]
-        self.assertFalse(any(argv[0] == "pkill" for argv in commands))
+        kill.assert_not_called()
         self.assertIn("not reachable", self._logged())
 
     def test_probe_reconfigure_healing_the_stack_skips_the_flip(self) -> None:
@@ -508,6 +521,7 @@ class RepairWaylandImBridgeTests(unittest.TestCase):
     def test_flip_sequence_and_success(self) -> None:
         run = self.enterContext(
             mock.patch.object(install, "run_command", return_value=_completed()))
+        kill = self.enterContext(mock.patch.object(install.os, "kill"))
         # Recheck after the probe still sees no bridge; the post-flip poll does.
         with mock.patch.object(install, "_ibus_daemon_pids", return_value=["300"]), \
              mock.patch.object(install, "_wayland_bridge_pids",
@@ -515,9 +529,10 @@ class RepairWaylandImBridgeTests(unittest.TestCase):
             install.repair_wayland_im_bridge(self.ctx)
 
         commands = [list(map(str, call.args[0])) for call in run.call_args_list]
-        # The bridgeless daemon is cleared so the relaunched bridge's
-        # --exec-daemon child does not collide with it.
-        self.assertTrue(any(argv[0] == "pkill" and "ibus-daemon" in argv for argv in commands))
+        # The bridgeless daemon is cleared by its session-filtered PID —
+        # never a UID-wide pkill that could reach other sessions' daemons.
+        kill.assert_called_once_with(300, install.signal.SIGTERM)
+        self.assertFalse(any(argv[0] == "pkill" and "ibus-daemon" in argv for argv in commands))
         # InputMethod is deleted, then restored — the change is what makes
         # KWin relaunch the stack on reconfigure.
         deletes = [argv for argv in commands
@@ -576,6 +591,26 @@ class SessionScopingTests(unittest.TestCase):
         }
         self.assertEqual(
             self._filter(["1", "2", "3", "4"], environs), ["1", "3"])
+
+    def test_display_only_process_matches_a_wayland_session(self) -> None:
+        """Each display variable matches its own value, not each other's.
+
+        A KDE Wayland session exports both WAYLAND_DISPLAY=wayland-0 and
+        DISPLAY=:0; an XWayland-facing process carrying only DISPLAY=:0 is
+        still ours and must not be filtered out.
+        """
+
+        environs = {"/proc/1/environ": b"DISPLAY=:0\0HOME=/home/x\0"}
+        env = {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"}
+
+        def fake_path(spec: str) -> mock.Mock:
+            proc = mock.Mock()
+            proc.read_bytes.return_value = environs[spec]
+            return proc
+
+        with mock.patch.dict(install.os.environ, env, clear=True), \
+             mock.patch.object(install, "Path", side_effect=fake_path):
+            self.assertEqual(install._pids_in_current_session(["1"]), ["1"])
 
 
 class CheckImStackTests(unittest.TestCase):
