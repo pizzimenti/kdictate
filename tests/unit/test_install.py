@@ -203,7 +203,7 @@ class BuildDependencyProbeTests(unittest.TestCase):
 
 
 class GlobalShortcutRepairTests(unittest.TestCase):
-    """--reconfigure must be able to repair a broken Ctrl+Space binding."""
+    """The same-version repair run must be able to fix a broken Ctrl+Space binding."""
 
     ENTRY = "_launch=Ctrl+Space, Ctrl+Space"
 
@@ -710,17 +710,19 @@ class CheckImStackTests(unittest.TestCase):
 
 
 class InstallerArgumentTests(unittest.TestCase):
-    def test_reconfigure_flag_exists_and_defaults_off(self) -> None:
-        """Repairing an install at the current version must be possible.
+    def test_installer_is_flagless(self) -> None:
+        """No options: every decision is derived or asked interactively.
 
-        Every configuration step is idempotent and re-running them is the
-        documented repair path. The version gate skips all of them when the
-        versions match, so without an override a user whose install broke *at
-        the current version* could only fix it by editing app_metadata.py.
+        Same-version repair — the job the short-lived ``--reconfigure`` flag
+        (0.15–0.17 pre-release) existed for — is an interactive prompt in
+        main() instead, so repairing a broken install never requires knowing
+        a flag exists.
         """
 
-        self.assertFalse(install.parse_args([]).reconfigure)
-        self.assertTrue(install.parse_args(["--reconfigure"]).reconfigure)
+        install.parse_args([])  # bare invocation parses cleanly
+        with self.assertRaises(SystemExit):  # unknown flags still rejected
+            with mock.patch("sys.stderr", new=io.StringIO()):
+                install.parse_args(["--reconfigure"])
 
 
 class PromptUpdateTests(unittest.TestCase):

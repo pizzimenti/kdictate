@@ -60,6 +60,16 @@ typing, which is why every version "worked after reboot."
   nothing typed" is attributable to the correct instance and provably beyond
   kdictate.
 
+### Changed
+
+- **The installer is flagless again.** The `--reconfigure` flag (introduced
+  during the 0.15 pre-release churn, never a settled design) is gone;
+  running the installer at the current version now *asks* "re-run
+  configuration to repair the KDE/IBus wiring? [y/N]" instead. Every
+  installer decision is either derived from system state or asked
+  interactively — repairing a broken install never requires knowing a flag
+  exists.
+
 The daemon runtime is otherwise unchanged from 0.16.0 (= 0.13.0 behaviour).
 
 ## 0.16.0

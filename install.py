@@ -523,8 +523,8 @@ def register_global_shortcut(ctx: InstallContext) -> None:
     the case that most needs repairing. Plasma rewrites kglobalshortcutsrc on
     its own — a shortcut reset or a conflict can drop or change the ``_launch``
     line while leaving the section behind — and the binding is then broken
-    with no way for ``--reconfigure`` to restore it, which is precisely what
-    that flag advertises.
+    with no way for the same-version repair run to restore it, which is
+    precisely what that run advertises.
     """
 
     shortcut_file = ctx.home / ".config" / "kglobalshortcutsrc"
@@ -1340,26 +1340,26 @@ def _write_backend_dropin(ctx: InstallContext) -> None:
 # -------------------------------------------------------------------
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse the installer's own options."""
+    """Parse the installer's own options.
+
+    Deliberately flagless: every decision the installer makes is either
+    derived from the system state or asked interactively. The one flag
+    that briefly existed (``--reconfigure``, 0.15–0.17 pre-release) is
+    now the same-version *prompt* in main() — the repair path should not
+    require knowing a flag exists.
+    """
 
     parser = argparse.ArgumentParser(
         prog="install.py",
         description="Install or update KDictate for the current user.",
     )
-    parser.add_argument(
-        "--reconfigure",
-        action="store_true",
-        help="Re-run the configuration steps even when the installed version "
-             "already matches this tree. Use this to repair a broken install "
-             "-- a clobbered Ctrl+Space binding, a missing IBus engine "
-             "registration, a backend switch -- without having to change the "
-             "version number first.",
-    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+    # Flagless by design — this still rejects unknown options and serves
+    # --help rather than silently ignoring a typo'd invocation.
+    parse_args(argv)
 
     if os.geteuid() == 0:
         die(
@@ -1378,27 +1378,31 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"\n  KDictate {__version__} installer\n")
 
-    # Version gate first, before any other prompt: a system that is already
-    # current should cost one command and no questions.
-    #
-    # --reconfigure exists because every configuration step below is
+    # Version gate first, before any other prompt. Same-version runs get a
+    # repair *prompt* rather than a flag: every configuration step below is
     # idempotent and re-running them is the documented repair path (a Plasma
     # reset clobbers the Ctrl+Space binding, the IBus preload list loses its
-    # entry, the backend needs switching). Gating those behind a version
-    # change would leave a user whose install is broken *at the current
-    # version* with no way to fix it short of editing app_metadata.py, so the
-    # exit below names the flag rather than just refusing.
+    # entry, the Wayland IM bridge is severed, the backend needs switching).
+    # Gating repair behind a version change would leave a user whose install
+    # is broken *at the current version* with no way to fix it; hiding it
+    # behind a flag would leave them needing to know the flag exists. The
+    # default answer is No, so an accidental re-run still costs nothing.
     packaged = _is_packaged_install()
     installed = _installed_version(ctx, packaged)
     up_to_date = installed is not None and installed == __version__
 
-    if up_to_date and not args.reconfigure:
-        print(f"  Already at {__version__} — nothing to do.")
-        print("  Re-run with --reconfigure to repair the KDE/IBus wiring.\n")
-        return 0
-
     if up_to_date:
-        print(f"  Already at {__version__}; reconfiguring at your request.\n")
+        print(f"  Already at {__version__} — nothing to install.")
+        try:
+            choice = input(
+                "  Re-run configuration to repair the KDE/IBus wiring? [y/N]: "
+            ).strip().lower()
+        except EOFError:
+            choice = ""
+        if choice not in ("y", "yes"):
+            print("\n  Nothing was changed.\n")
+            return 0
+        print()
     elif not _prompt_update(installed):
         print("\n  Cancelled — nothing was changed.\n")
         return 0
