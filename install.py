@@ -472,14 +472,54 @@ def configure_kwin_input_method(ctx: InstallContext) -> None:
 
 
 def register_global_shortcut(ctx: InstallContext) -> None:
+    """Ensure the Ctrl+Space binding exists *and* is correct.
+
+    Treating the section's presence as sufficient made this unrepairable in
+    the case that most needs repairing. Plasma rewrites kglobalshortcutsrc on
+    its own — a shortcut reset or a conflict can drop or change the ``_launch``
+    line while leaving the section behind — and the binding is then broken
+    with no way for ``--reconfigure`` to restore it, which is precisely what
+    that flag advertises.
+    """
+
     shortcut_file = ctx.home / ".config" / "kglobalshortcutsrc"
     section = f"[services][{TOGGLE_DESKTOP_NAME}]"
     entry = "_launch=Ctrl+Space, Ctrl+Space"
     content = shortcut_file.read_text(encoding="utf-8") if shortcut_file.exists() else ""
-    if section in content:
+
+    if section not in content:
+        content = content.rstrip("\n") + f"\n\n{section}\n{entry}\n"
+        write_home_file(ctx, shortcut_file, content)
         return
-    content = content.rstrip("\n") + f"\n\n{section}\n{entry}\n"
-    write_home_file(ctx, shortcut_file, content)
+
+    out: list[str] = []
+    in_section = False
+    has_entry = False
+    changed = False
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            if in_section and not has_entry:
+                # Section ended without a _launch line: restore it.
+                out.append(entry)
+                changed = True
+                has_entry = True
+            in_section = stripped == section
+        elif in_section and stripped.startswith("_launch="):
+            has_entry = True
+            if stripped != entry:
+                line = entry
+                changed = True
+        out.append(line)
+
+    if in_section and not has_entry:
+        out.append(entry)
+        changed = True
+
+    if not changed:
+        return
+    write_home_file(ctx, shortcut_file, "\n".join(out) + "\n")
 
 
 _ENGINE_PROCESS_PATTERN = "(libexec|bin)/ibus-engine-kdictate"
@@ -660,17 +700,18 @@ def _installed_version(ctx: InstallContext, packaged: bool) -> str | None:
 
     if not ctx.python_bin.exists():
         return None
-    # -P (3.11+, and pyproject already requires >=3.11) stops Python putting
-    # the current directory on sys.path. Without it, `python -c` resolves
-    # sys.path[0] to the cwd — which for the documented `python3 install.py`
-    # from the repo root is the source tree itself. The probe would then
-    # import the tree it is installing *from* rather than the venv copy it is
-    # asking about, always report the tree's own version, and make the whole
-    # version gate below a permanent "already up to date" no-op. cwd is moved
-    # out of the repo as well so the answer does not depend on where the
-    # installer happened to be invoked.
+    # -I (isolated mode) so the probe answers about the *installed* copy and
+    # nothing else. `python -c` otherwise resolves sys.path[0] to the cwd —
+    # which for the documented `python3 install.py` from the repo root is the
+    # source tree itself — and additionally honours PYTHONPATH, which a
+    # development shell or IDE may well have pointing at this same checkout.
+    # Either route makes the probe import the tree it is installing *from*,
+    # report that version as installed, and turn the version gate below into
+    # a permanent "already up to date" no-op. -I covers both (it implies -P,
+    # -E and -s); cwd is moved out of the repo as belt and braces so the
+    # answer cannot depend on where the installer was invoked.
     result = run_command(
-        [ctx.python_bin, "-P", "-c",
+        [ctx.python_bin, "-I", "-c",
          "from kdictate import __version__; print(__version__)"],
         quiet=True, check=False, cwd=ctx.home,
     )
@@ -722,19 +763,21 @@ def _require_build_dependencies() -> list[str]:
     acts on the answer.
     """
 
-    # -P and a cwd outside the checkout, for the same reason _installed_version
-    # needs them: `python -c` puts the current directory on sys.path, and this
-    # runs from a repo root that accumulates a `build/` directory from the very
-    # wheel step these dependencies exist to perform. Python then imports that
-    # directory as an implicit namespace package, `import build` succeeds, and
-    # the check reports python-build present when pacman has never heard of it
-    # -- so the user installs only what was reported, re-runs, and makepkg dies
-    # at `python -m build` anyway.
+    # -I (isolated mode) and a cwd outside the checkout, for the same reason
+    # _installed_version needs them. This runs from a repo root that
+    # accumulates a `build/` directory from the very wheel step these
+    # dependencies exist to perform, and `python -c` both puts the cwd on
+    # sys.path and honours PYTHONPATH. Either route lets Python import that
+    # directory as an implicit namespace package, so `import build` succeeds
+    # against a pile of build artifacts and the check reports python-build
+    # present when pacman has never heard of it -- the user installs only what
+    # was reported, re-runs, and makepkg dies at `python -m build` anyway.
+    # -I closes both (it implies -P, -E and -s).
     missing = [
         package
         for module, package in (("build", "python-build"), ("installer", "python-installer"))
         if run_command(
-            [sys.executable, "-P", "-c", f"import {module}"],
+            [sys.executable, "-I", "-c", f"import {module}"],
             quiet=True, check=False, cwd=Path.home(),
         ).returncode != 0
     ]

@@ -167,7 +167,10 @@ class InstalledVersionTests(unittest.TestCase):
                 self.assertEqual(install._installed_version(ctx, False), "0.12.0")
 
         argv = run.call_args.args[0]
-        self.assertIn("-P", argv)
+        # -I, not -P: -P only stops the cwd being prepended, while PYTHONPATH
+        # is still honoured, and a dev shell or IDE may well have this very
+        # checkout on it. -I implies -P, -E and -s.
+        self.assertIn("-I", argv)
         # ...and not resolved relative to wherever the installer was invoked.
         self.assertEqual(run.call_args.kwargs["cwd"], ctx.home)
 
@@ -191,8 +194,71 @@ class BuildDependencyProbeTests(unittest.TestCase):
 
         self.assertTrue(run.call_args_list, "probe never ran")
         for call in run.call_args_list:
-            self.assertIn("-P", call.args[0])
-            self.assertNotEqual(call.kwargs.get("cwd"), None)
+            # -I rather than -P: -P leaves PYTHONPATH honoured, so a shell
+            # exporting this checkout would still shadow the real module.
+            self.assertIn("-I", call.args[0])
+            # The specific directory matters. Accepting any non-null cwd would
+            # pass even if the probe ran inside the checkout it must avoid.
+            self.assertEqual(call.kwargs.get("cwd"), Path.home())
+
+
+class GlobalShortcutRepairTests(unittest.TestCase):
+    """--reconfigure must be able to repair a broken Ctrl+Space binding."""
+
+    ENTRY = "_launch=Ctrl+Space, Ctrl+Space"
+
+    def _run(self, existing: str) -> str | None:
+        written: dict[str, str] = {}
+
+        def _capture(_ctx, path, content):
+            written["content"] = content
+
+        ctx = _ctx(Path("/tmp/kdictate-runtime"))
+        with mock.patch.object(Path, "exists", return_value=True):
+            with mock.patch.object(Path, "read_text", return_value=existing):
+                with mock.patch.object(install, "write_home_file", _capture):
+                    install.register_global_shortcut(ctx)
+        return written.get("content")
+
+    def test_missing_section_is_added(self) -> None:
+        result = self._run("[services][other.desktop]\n_launch=Ctrl+X\n")
+        self.assertIsNotNone(result)
+        self.assertIn(install.TOGGLE_DESKTOP_NAME, result or "")
+        self.assertIn(self.ENTRY, result or "")
+
+    def test_a_correct_binding_is_left_untouched(self) -> None:
+        existing = f"[services][{install.TOGGLE_DESKTOP_NAME}]\n{self.ENTRY}\n"
+        self.assertIsNone(self._run(existing), "rewrote a file that was already correct")
+
+    def test_a_changed_binding_is_restored(self) -> None:
+        """The case that made this unrepairable: section present, entry wrong.
+
+        Returning as soon as the section was found meant a Plasma shortcut
+        reset left the binding broken with no way to fix it.
+        """
+
+        existing = (
+            f"[services][{install.TOGGLE_DESKTOP_NAME}]\n"
+            "_launch=Ctrl+Alt+Z, Ctrl+Alt+Z\n"
+        )
+        result = self._run(existing) or ""
+        self.assertIn(self.ENTRY, result)
+        self.assertNotIn("Ctrl+Alt+Z", result)
+
+    def test_a_removed_entry_is_restored(self) -> None:
+        existing = (
+            f"[services][{install.TOGGLE_DESKTOP_NAME}]\n"
+            "_k_friendly_name=KDictate\n"
+            "\n"
+            "[services][other.desktop]\n"
+            "_launch=Ctrl+X\n"
+        )
+        result = self._run(existing) or ""
+        self.assertIn(self.ENTRY, result)
+        # Restored inside our own section, not appended to the other one.
+        ours = result.split(f"[services][{install.TOGGLE_DESKTOP_NAME}]")[1]
+        self.assertIn(self.ENTRY, ours.split("[services][other.desktop]")[0])
+        self.assertIn("_launch=Ctrl+X", result)
 
 
 class StaleEngineProcessTests(unittest.TestCase):

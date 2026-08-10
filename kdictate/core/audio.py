@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import re
 import subprocess
+from collections.abc import Sequence
 from typing import Final
 
 DEFAULT_PACTL_TIMEOUT_S: Final[float] = 3.0
@@ -45,26 +46,37 @@ def _run_pactl(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def set_default_source_volume(
-    percent: int = MIN_MIC_VOLUME_PERCENT,
+    percent: int | Sequence[int] = MIN_MIC_VOLUME_PERCENT,
     source: str = DEFAULT_SOURCE_TOKEN,
 ) -> bool:
-    """Set ``source``'s volume to ``percent``.
+    """Set ``source``'s volume, either uniformly or per channel.
+
+    ``pactl set-source-volume SOURCE VOLUME [VOLUME ...]`` accepts one value
+    per channel, so a sequence sets each channel independently. Passing a
+    single value to a multi-channel source sets every channel to it, which
+    flattens any balance the user had — see
+    :func:`ensure_default_source_volume` for why that matters.
 
     Returns ``True`` on success, ``False`` if pactl was unavailable or exited
     with a non-zero status. Logs warnings but does not raise — recording should
     still proceed even if the volume adjustment fails.
     """
 
+    percents = [percent] if isinstance(percent, int) else list(percent)
+    if not percents:
+        return False
+    rendered = [f"{value}%" for value in percents]
+
     try:
-        result = _run_pactl("set-source-volume", source, f"{percent}%")
+        result = _run_pactl("set-source-volume", source, *rendered)
     except Exception as exc:  # noqa: BLE001
         _LOGGER.warning("pactl set-source-volume failed: %s", exc)
         return False
 
     if result.returncode != 0:
         _LOGGER.warning(
-            "pactl set-source-volume %s %d%% exited %d: %s",
-            source, percent, result.returncode, result.stderr.strip(),
+            "pactl set-source-volume %s %s exited %d: %s",
+            source, " ".join(rendered), result.returncode, result.stderr.strip(),
         )
         return False
     return True
@@ -83,16 +95,22 @@ def read_default_source_name() -> str | None:
     return result.stdout.strip() or None
 
 
-def read_default_source_volume(source: str = DEFAULT_SOURCE_TOKEN) -> int | None:
-    """Return ``source``'s volume as a percentage, or ``None``.
+def read_default_source_volumes(
+    source: str = DEFAULT_SOURCE_TOKEN,
+) -> list[int] | None:
+    """Return one percentage per channel for ``source``, or ``None``.
 
-    ``pactl get-source-volume`` prints one entry per channel::
+    ``pactl get-source-volume`` prints an entry per channel::
 
-        Volume: front-left: 59637 /  91% / -2.46 dB,   front-right: ...
+        Volume: front-left: 59637 /  91% / -2.46 dB,   front-right: ... / 91% ...
+                balance 0.00
 
-    The channels are set together here, so the first percentage is taken as
-    representative rather than trying to reconcile a per-channel imbalance the
-    daemon did not create and should not silently flatten.
+    Every channel is returned rather than just the first. Reading one value
+    and writing one value back would set *all* channels to it, so a source
+    balanced 40%/90% would be read as 40, "raised" to the floor, and silently
+    flattened to 50/50 — lowering a channel, under a contract that promises
+    only ever to raise. The trailing ``balance`` line carries no percentage,
+    so it does not pollute the match.
     """
 
     try:
@@ -108,14 +126,14 @@ def read_default_source_volume(source: str = DEFAULT_SOURCE_TOKEN) -> int | None
         )
         return None
 
-    match = re.search(r"(\d+)%", result.stdout)
-    if match is None:
+    percents = [int(value) for value in re.findall(r"/\s*(\d+)%", result.stdout)]
+    if not percents:
         _LOGGER.warning(
             "could not parse a percentage from pactl volume output: %r",
             result.stdout.strip()[:200],
         )
         return None
-    return int(match.group(1))
+    return percents
 
 
 def ensure_default_source_volume(
@@ -133,6 +151,12 @@ def ensure_default_source_volume(
     while lowering, or pinning to a fixed target, would override a level the
     user chose deliberately and, at a high enough setting, clip the capture
     into uselessness. See :data:`MIN_MIC_VOLUME_PERCENT`.
+
+    Channels are handled individually. A source balanced 40%/90% has only one
+    channel below the floor, and writing a single value back would set both to
+    it — lowering the 90% channel and flattening the balance, under a contract
+    that promises only ever to raise. Each channel is therefore compared and
+    written as ``max(channel, minimum_percent)``.
 
     Concurrency, stated honestly: the check and the change are two separate
     pactl invocations, because PulseAudio/PipeWire expose no conditional
@@ -154,23 +178,27 @@ def ensure_default_source_volume(
     # default-device switch between them read one device and write another.
     source = read_default_source_name() or DEFAULT_SOURCE_TOKEN
 
-    current = read_default_source_volume(source)
-    if current is None:
+    current = read_default_source_volumes(source)
+    if not current:
         # Unknown level: do nothing rather than guess. Pinning blind is what
         # this function was changed to stop doing.
         return False
 
-    if current >= minimum_percent:
-        _LOGGER.info("capture volume %d%% (>= %d%%), left alone",
-                     current, minimum_percent)
+    if min(current) >= minimum_percent:
+        _LOGGER.info(
+            "capture volume %s (>= %d%%), left alone",
+            "/".join(f"{value}%" for value in current), minimum_percent,
+        )
         return True
 
+    targets = [max(value, minimum_percent) for value in current]
     _LOGGER.warning(
-        "capture volume %d%% is below the %d%% floor; raising it. Speech below "
-        "this level is not reliably detected.",
-        current, minimum_percent,
+        "capture volume %s is below the %d%% floor; raising to %s. Speech "
+        "below this level is not reliably detected.",
+        "/".join(f"{value}%" for value in current), minimum_percent,
+        "/".join(f"{value}%" for value in targets),
     )
-    return set_default_source_volume(minimum_percent, source)
+    return set_default_source_volume(targets, source)
 
 
 def resolve_default_input_device() -> tuple[str, bool]:
