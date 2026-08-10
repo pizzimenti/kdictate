@@ -16,7 +16,7 @@ systemd --user
 
 | Process | Started by | Lifecycle |
 |---------|-----------|-----------|
-| `ibus-ui-gtk3` | KWin (when VirtualKeyboard.enabled=true) | Lives for the desktop session |
+| `ibus-ui-gtk3` | KWin (from kwinrc `[Wayland] InputMethod`) | Lives for the desktop session |
 | `ibus-daemon` | `ibus-ui-gtk3` (--exec-daemon flag) | Lives as long as ibus-ui-gtk3 |
 | `ibus-engine-kdictate` | `ibus-daemon` (when engine is activated) | Lives as long as ibus-daemon |
 | `kdictate-daemon` | systemd user service | Independent of IBus |
@@ -72,14 +72,18 @@ pkill -f ibus-ui-gtk3
 IBUS_COMPONENT_PATH="$HOME/.local/share/ibus/component:/usr/share/ibus/component" \
     ibus write-cache
 
-# 4. Restart from KWin down (this relaunches ibus-ui-gtk3 → ibus-daemon → engine)
-gdbus call --session --dest org.kde.KWin --object-path /VirtualKeyboard \
-    --method org.freedesktop.DBus.Properties.Set \
-    org.kde.kwin.VirtualKeyboard enabled '<boolean false>'
+# 4. Restart from KWin down (this relaunches ibus-ui-gtk3 → ibus-daemon → engine).
+#    KWin watches kwinrc via KConfigWatcher, which fires ONLY on notified
+#    writes — kwriteconfig6 needs --notify, and `/KWin reconfigure` is NOT
+#    part of the input-method path (Workspace::slotReconfigure never touches
+#    it). The old org.kde.kwin.VirtualKeyboard.enabled toggle is gone as of
+#    Plasma 6.7 and /VirtualKeyboard exposes no relaunch method.
+kwriteconfig6 --notify --file ~/.config/kwinrc \
+    --group Wayland --key InputMethod --delete
 sleep 1
-gdbus call --session --dest org.kde.KWin --object-path /VirtualKeyboard \
-    --method org.freedesktop.DBus.Properties.Set \
-    org.kde.kwin.VirtualKeyboard enabled '<boolean true>'
+kwriteconfig6 --notify --file ~/.config/kwinrc \
+    --group Wayland --key InputMethod \
+    /usr/share/applications/org.freedesktop.IBus.Panel.Wayland.Gtk3.desktop
 
 # 5. Wait for IBus to settle, then start daemon
 sleep 2

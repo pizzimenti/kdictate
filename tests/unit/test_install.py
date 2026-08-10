@@ -203,7 +203,7 @@ class BuildDependencyProbeTests(unittest.TestCase):
 
 
 class GlobalShortcutRepairTests(unittest.TestCase):
-    """--reconfigure must be able to repair a broken Ctrl+Space binding."""
+    """The same-version repair run must be able to fix a broken Ctrl+Space binding."""
 
     ENTRY = "_launch=Ctrl+Space, Ctrl+Space"
 
@@ -267,6 +267,8 @@ class StaleEngineProcessTests(unittest.TestCase):
     def setUp(self) -> None:
         self.enterContext(
             mock.patch.object(install.shutil, "which", return_value="/usr/bin/pgrep"))
+        # install_log appends to the real ~/.local/state; keep tests hermetic.
+        self.enterContext(mock.patch.object(install, "install_log"))
 
     @staticmethod
     def _pgrep(stdout: str) -> subprocess.CompletedProcess[str]:
@@ -328,18 +330,513 @@ class StaleEngineProcessTests(unittest.TestCase):
         run.assert_not_called()
 
 
-class InstallerArgumentTests(unittest.TestCase):
-    def test_reconfigure_flag_exists_and_defaults_off(self) -> None:
-        """Repairing an install at the current version must be possible.
+def _make_ctx(home: Path) -> install.InstallContext:
+    return install.InstallContext(
+        script_path=home / "install.py", script_dir=home,
+        home=home, runtime_dir=home / ".local/share/kdictate")
 
-        Every configuration step is idempotent and re-running them is the
-        documented repair path. The version gate skips all of them when the
-        versions match, so without an override a user whose install broke *at
-        the current version* could only fix it by editing app_metadata.py.
+
+class InstallLogTests(unittest.TestCase):
+    def test_appends_timestamped_line(self) -> None:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / "state" / "install.log"
+            with mock.patch.object(install, "INSTALL_LOG_PATH", target):
+                install.install_log("first")
+                install.install_log("second")
+            lines = target.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertTrue(lines[0].endswith(" first"))
+        self.assertTrue(lines[1].endswith(" second"))
+        # "YYYY-MM-DD HH:MM:SS message"
+        self.assertRegex(lines[0], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} ")
+
+    def test_logging_failure_is_swallowed(self) -> None:
+        unwritable = Path("/proc/definitely/not/writable/install.log")
+        with mock.patch.object(install, "INSTALL_LOG_PATH", unwritable):
+            install.install_log("must not raise")
+
+
+class RefreshIbusRegistryTests(unittest.TestCase):
+    """The installer must never sever a working input-method stack.
+
+    Killing ibus-daemon mid-session severed KWin's Wayland IM bridge on
+    every 0.14-0.16 install (only a relogin recovered typing), so the
+    healthy path is now write-cache + engine clearing and nothing else.
+    """
+
+    def setUp(self) -> None:
+        self.enterContext(mock.patch.object(install, "install_log"))
+        self.run_command = self.enterContext(
+            mock.patch.object(install, "run_command", return_value=_completed()))
+        self.clear = self.enterContext(
+            mock.patch.object(install, "clear_stale_engine_processes", return_value=0))
+        self.repair = self.enterContext(
+            mock.patch.object(install, "repair_wayland_im_bridge"))
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.ctx = _make_ctx(Path(tmp.name))
+
+    def _commands(self) -> list[list[str]]:
+        return [list(call.args[0]) for call in self.run_command.call_args_list]
+
+    def test_healthy_stack_is_left_untouched(self) -> None:
+        with mock.patch.object(install, "_kwin_wayland_running", return_value=True), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=["100"]), \
+             mock.patch.object(install, "_ibus_daemon_pids", return_value=["200"]):
+            install.refresh_ibus_registry(self.ctx)
+
+        self.repair.assert_not_called()
+        self.clear.assert_called_once()
+        for argv in self._commands():
+            self.assertNotIn("pkill", argv[0], f"healthy path must not kill: {argv}")
+            self.assertNotEqual(argv[0], "ibus-daemon")
+        # write-cache still refreshes the registry.
+        self.assertTrue(any(argv[:2] == ["ibus", "write-cache"] for argv in self._commands()))
+
+    def test_missing_bridge_triggers_repair(self) -> None:
+        with mock.patch.object(install, "_kwin_wayland_running", return_value=True), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=[]), \
+             mock.patch.object(install, "_ibus_daemon_pids", return_value=["200"]):
+            install.refresh_ibus_registry(self.ctx)
+        self.repair.assert_called_once()
+
+    def test_non_kde_session_without_daemon_starts_plain_daemon(self) -> None:
+        with mock.patch.object(install, "_kwin_wayland_running", return_value=False), \
+             mock.patch.object(install, "_ibus_daemon_pids", return_value=[]):
+            install.refresh_ibus_registry(self.ctx)
+        self.repair.assert_not_called()
+        self.assertTrue(any(argv[0] == "ibus-daemon" for argv in self._commands()))
+
+    def test_non_kde_session_with_daemon_is_untouched(self) -> None:
+        with mock.patch.object(install, "_kwin_wayland_running", return_value=False), \
+             mock.patch.object(install, "_ibus_daemon_pids", return_value=["200"]):
+            install.refresh_ibus_registry(self.ctx)
+        self.repair.assert_not_called()
+        self.assertFalse(any(argv[0] == "ibus-daemon" for argv in self._commands()))
+
+    def test_missing_pgrep_means_unknown_state_and_hands_off(self) -> None:
+        """No probes → no verdict. A healthy session must not be misread as a
+        cold start: ``ibus-daemon -r`` (--replace) would evict the
+        compositor-managed daemon and sever the stack."""
+
+        with mock.patch.object(install.shutil, "which",
+                               side_effect=lambda name: None if name == "pgrep" else f"/usr/bin/{name}"):
+            install.refresh_ibus_registry(self.ctx)
+        self.repair.assert_not_called()
+        for argv in self._commands():
+            self.assertNotEqual(argv[0], "ibus-daemon")
+            self.assertNotEqual(argv[0], "pkill")
+
+
+class RepairWaylandImBridgeTests(unittest.TestCase):
+    """KWin relaunch of the IM stack via the kwinrc InputMethod flip."""
+
+    def setUp(self) -> None:
+        self.install_log = self.enterContext(mock.patch.object(install, "install_log"))
+        self.enterContext(mock.patch.object(install.time, "sleep"))
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+        self.ctx = _make_ctx(self.home)
+        # A real file so KDE_VIRTUAL_KEYBOARD_DESKTOP.is_file() passes.
+        desktop = self.home / "org.freedesktop.IBus.Panel.Wayland.Gtk3.desktop"
+        desktop.write_text("[Desktop Entry]\n", encoding="utf-8")
+        self.enterContext(
+            mock.patch.object(install, "KDE_VIRTUAL_KEYBOARD_DESKTOP", desktop))
+        self.enterContext(
+            mock.patch.object(install.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"))
+
+    def _logged(self) -> str:
+        return " | ".join(str(call.args[0]) for call in self.install_log.call_args_list)
+
+    def test_missing_tools_abort_before_any_mutation(self) -> None:
+        with mock.patch.object(install.shutil, "which", return_value=None), \
+             mock.patch.object(install, "run_command") as run:
+            install.repair_wayland_im_bridge(self.ctx)
+        run.assert_not_called()
+        self.assertIn("skipped", self._logged())
+
+    def test_unreachable_kwin_aborts_before_killing_daemon(self) -> None:
+        with mock.patch.object(
+            install, "run_command", return_value=_completed(returncode=1)
+        ), mock.patch.object(install, "_ibus_daemon_pids", return_value=["300"]), \
+             mock.patch.object(install.os, "kill") as kill:
+            install.repair_wayland_im_bridge(self.ctx)
+        kill.assert_not_called()
+        self.assertIn("not reachable", self._logged())
+
+    def test_probe_reconfigure_healing_the_stack_skips_the_flip(self) -> None:
+        """First-install race: the probe reconfigure may itself launch the bridge.
+
+        configure_kwin_input_method has just written InputMethod, so KWin's
+        first sight of it is our reachability probe — which can spawn the
+        stack. Killing that just-healthy daemon would stake a working session
+        on the flip succeeding.
         """
 
-        self.assertFalse(install.parse_args([]).reconfigure)
-        self.assertTrue(install.parse_args(["--reconfigure"]).reconfigure)
+        run = self.enterContext(
+            mock.patch.object(install, "run_command", return_value=_completed()))
+        with mock.patch.object(install, "_ibus_daemon_pids", return_value=["300"]), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=["400"]):
+            install.repair_wayland_im_bridge(self.ctx)
+
+        commands = [list(call.args[0]) for call in run.call_args_list]
+        self.assertFalse(any(argv[0] == "pkill" for argv in commands))
+        self.assertFalse(any(argv[0] == "kwriteconfig6" for argv in commands))
+        self.assertIn("became healthy", self._logged())
+
+    def test_interrupt_between_delete_and_restore_still_restores(self) -> None:
+        """A Ctrl+C mid-flip must not leave kwinrc without an InputMethod key.
+
+        Without the key, KWin never launches a bridge again — even at the
+        next login — and the promised relogin recovery is gone.
+        """
+
+        run = self.enterContext(
+            mock.patch.object(install, "run_command", return_value=_completed()))
+        # sleep #1 is the post-probe recheck; sleep #2 sits between the
+        # kwinrc delete and the restore — interrupt there.
+        sleeps = iter([None, KeyboardInterrupt()])
+
+        def _sleep(_seconds: float) -> None:
+            outcome = next(sleeps, None)
+            if isinstance(outcome, BaseException):
+                raise outcome
+
+        with mock.patch.object(install.time, "sleep", side_effect=_sleep), \
+             mock.patch.object(install, "_ibus_daemon_pids", return_value=[]), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=[]), \
+             self.assertRaises(KeyboardInterrupt):
+            install.repair_wayland_im_bridge(self.ctx)
+
+        commands = [list(map(str, call.args[0])) for call in run.call_args_list]
+        restores = [argv for argv in commands
+                    if argv[0] == "kwriteconfig6"
+                    and str(install.KDE_VIRTUAL_KEYBOARD_DESKTOP) in argv]
+        self.assertEqual(len(restores), 1)
+
+    def test_surviving_daemon_aborts_the_flip(self) -> None:
+        """A daemon that shrugs off SIGKILL would collide with the relaunched
+        bridge's --exec-daemon child — abort rather than flip kwinrc for a
+        repair that cannot work."""
+
+        run = self.enterContext(
+            mock.patch.object(install, "run_command", return_value=_completed()))
+        self.enterContext(mock.patch.object(install.os, "kill"))
+        with mock.patch.object(install, "_ibus_daemon_pids", return_value=["300"]), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=[]), \
+             mock.patch.object(install, "_pid_alive", return_value=True):
+            install.repair_wayland_im_bridge(self.ctx)
+
+        commands = [list(call.args[0]) for call in run.call_args_list]
+        self.assertFalse(any(argv[0] == "kwriteconfig6" for argv in commands))
+        self.assertIn("survived", self._logged())
+
+    def test_flip_sequence_and_success(self) -> None:
+        run = self.enterContext(
+            mock.patch.object(install, "run_command", return_value=_completed()))
+        kill = self.enterContext(mock.patch.object(install.os, "kill"))
+        self.enterContext(mock.patch.object(install, "_pid_alive", return_value=False))
+        # Recheck after the probe still sees no bridge; the post-flip poll does.
+        with mock.patch.object(install, "_ibus_daemon_pids", return_value=["300"]), \
+             mock.patch.object(install, "_wayland_bridge_pids",
+                               side_effect=[[], ["400"]]):
+            install.repair_wayland_im_bridge(self.ctx)
+
+        commands = [list(map(str, call.args[0])) for call in run.call_args_list]
+        # The bridgeless daemon is cleared by its session-filtered PID —
+        # never a UID-wide pkill that could reach other sessions' daemons.
+        kill.assert_called_once_with(300, install.signal.SIGTERM)
+        self.assertFalse(any(argv[0] == "pkill" and "ibus-daemon" in argv for argv in commands))
+        # InputMethod is deleted, then restored, and BOTH writes carry
+        # --notify: KWin's KConfigWatcher only fires on notified writes, so
+        # a plain write changes the file and relaunches nothing (the exact
+        # failure of the first live repair attempt, 2026-08-10).
+        deletes = [argv for argv in commands
+                   if argv[0] == "kwriteconfig6" and "--delete" in argv]
+        restores = [argv for argv in commands
+                    if argv[0] == "kwriteconfig6" and str(install.KDE_VIRTUAL_KEYBOARD_DESKTOP) in argv]
+        self.assertEqual(len(deletes), 1)
+        self.assertEqual(len(restores), 1)
+        self.assertIn("--notify", deletes[0])
+        self.assertIn("--notify", restores[0])
+        self.assertLess(commands.index(deletes[0]), commands.index(restores[0]))
+        # /KWin reconfigure is NOT part of KWin's input-method path
+        # (Workspace::slotReconfigure never touches it) — its presence
+        # here would mean the repair regressed to the falsified mechanism.
+        self.assertFalse(any("reconfigure" in argv for argv in commands))
+        self.assertIn("succeeded", self._logged())
+
+    def test_bridge_without_daemon_is_not_success(self) -> None:
+        """The bridge alone is not a typing path — its --exec-daemon child
+        must be up too, or 'repair succeeded' would be the same false
+        health the self-check exists to prevent."""
+
+        self.enterContext(
+            mock.patch.object(install, "run_command", return_value=_completed()))
+        with mock.patch.object(install, "_ibus_daemon_pids", return_value=[]), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=["400"]):
+            install.repair_wayland_im_bridge(self.ctx)
+        self.assertIn("FAILED", self._logged())
+        self.assertNotIn("succeeded", self._logged())
+
+    def test_bridge_never_appearing_starts_fallback_daemon(self) -> None:
+        run = self.enterContext(
+            mock.patch.object(install, "run_command", return_value=_completed()))
+        with mock.patch.object(install, "_ibus_daemon_pids", return_value=[]), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=[]):
+            install.repair_wayland_im_bridge(self.ctx)
+        commands = [list(call.args[0]) for call in run.call_args_list]
+        self.assertTrue(any(argv[0] == "ibus-daemon" for argv in commands))
+        self.assertIn("FAILED", self._logged())
+
+
+class ConfigureKwinInputMethodTests(unittest.TestCase):
+    """The install-time kwinrc writes must be notified and mode-aware."""
+
+    def setUp(self) -> None:
+        self.enterContext(mock.patch.object(install, "install_log"))
+        self.enterContext(mock.patch.object(
+            install.shutil, "which", side_effect=lambda name: f"/usr/bin/{name}"))
+        import tempfile
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.ctx = _make_ctx(Path(tmp.name))
+        desktop = Path(tmp.name) / "org.freedesktop.IBus.Panel.Wayland.Gtk3.desktop"
+        desktop.write_text("[Desktop Entry]\n", encoding="utf-8")
+        self.enterContext(
+            mock.patch.object(install, "KDE_VIRTUAL_KEYBOARD_DESKTOP", desktop))
+
+    def _run(self, *, mode: str) -> list[list[str]]:
+        def fake_run(command, **kwargs):  # noqa: ANN001, ANN003, ANN202
+            argv = [str(part) for part in command]
+            if argv[0] == "kreadconfig6":
+                return _completed(stdout=f"{mode}\n")
+            return _completed()
+
+        with mock.patch.object(install, "run_command", side_effect=fake_run) as run:
+            install.configure_kwin_input_method(self.ctx)
+        return [list(map(str, call.args[0])) for call in run.call_args_list]
+
+    def test_input_method_write_is_notified(self) -> None:
+        """KWin's KConfigWatcher only fires on notified writes; without
+        --notify a first install's InputMethod would not launch until the
+        next login."""
+
+        commands = self._run(mode="")
+        im_writes = [argv for argv in commands
+                     if argv[0] == "kwriteconfig6" and "InputMethod" in argv]
+        self.assertEqual(len(im_writes), 1)
+        self.assertIn("--notify", im_writes[0])
+
+    def test_legacy_enabled_written_only_when_mode_is_absent(self) -> None:
+        commands = self._run(mode="")
+        self.assertTrue(any("VirtualKeyboardEnabled" in argv for argv in commands))
+
+    def test_user_set_mode_is_respected(self) -> None:
+        """Plasma 6.7 ignores the legacy VirtualKeyboardEnabled bool when
+        VirtualKeyboardMode exists; a user-set mode is their configuration
+        and must not be fought over."""
+
+        commands = self._run(mode="0")
+        self.assertFalse(any("VirtualKeyboardEnabled" in argv for argv in commands))
+
+
+class SessionScopingTests(unittest.TestCase):
+    """UID-wide pgrep must not mix up concurrent graphical sessions."""
+
+    def _filter(
+        self, pids: list[str], environs: dict[str, bytes],
+        display: str | None = "wayland-0",
+    ) -> list[str]:
+        env = {"WAYLAND_DISPLAY": display} if display else {}
+
+        def fake_path(spec: str) -> mock.Mock:
+            proc = mock.Mock()
+            data = environs.get(spec)
+            if data is None:
+                proc.read_bytes.side_effect = FileNotFoundError("gone")
+            elif data == b"<unreadable>":
+                proc.read_bytes.side_effect = PermissionError("capability-protected")
+            else:
+                proc.read_bytes.return_value = data
+            return proc
+
+        with mock.patch.dict(install.os.environ, env, clear=True), \
+             mock.patch.object(install, "Path", side_effect=fake_path):
+            return install._pids_in_current_session(pids)
+
+    def test_without_display_env_everything_is_kept(self) -> None:
+        self.assertEqual(self._filter(["1", "2"], {}, display=None), ["1", "2"])
+
+    def test_only_this_sessions_processes_survive(self) -> None:
+        environs = {
+            "/proc/1/environ": b"WAYLAND_DISPLAY=wayland-0\0HOME=/home/x\0",
+            "/proc/2/environ": b"WAYLAND_DISPLAY=wayland-1\0HOME=/home/x\0",
+            "/proc/3/environ": b"HOME=/home/x\0",  # no display var: keep
+            # /proc/4 vanished between pgrep and the read: drop
+        }
+        self.assertEqual(
+            self._filter(["1", "2", "3", "4"], environs), ["1", "3"])
+
+    def test_strict_mode_drops_everything_not_positively_ours(self) -> None:
+        """Kill selection fails closed: only proven-ours PIDs survive.
+
+        Detection may keep unclassifiable processes (or every KDE session
+        reads as no-KWin), but killing on a guess is how sessions get
+        broken — capability-protected, display-less, and vanished
+        processes are all excluded under strict.
+        """
+
+        environs = {
+            "/proc/1/environ": b"WAYLAND_DISPLAY=wayland-0\0HOME=/home/x\0",  # ours
+            "/proc/2/environ": b"WAYLAND_DISPLAY=wayland-1\0HOME=/home/x\0",  # other session
+            "/proc/3/environ": b"HOME=/home/x\0",       # no display var: unprovable
+            "/proc/4/environ": b"<unreadable>",         # capability-protected
+            # /proc/5 vanished
+        }
+        env = {"WAYLAND_DISPLAY": "wayland-0"}
+
+        def fake_path(spec: str) -> mock.Mock:
+            proc = mock.Mock()
+            data = environs.get(spec)
+            if data is None:
+                proc.read_bytes.side_effect = FileNotFoundError("gone")
+            elif data == b"<unreadable>":
+                proc.read_bytes.side_effect = PermissionError("capability-protected")
+            else:
+                proc.read_bytes.return_value = data
+            return proc
+
+        with mock.patch.dict(install.os.environ, env, clear=True), \
+             mock.patch.object(install, "Path", side_effect=fake_path):
+            self.assertEqual(
+                install._pids_in_current_session(
+                    ["1", "2", "3", "4", "5"], strict=True),
+                ["1"],
+            )
+
+    def test_strict_mode_with_no_display_env_selects_nothing(self) -> None:
+        with mock.patch.dict(install.os.environ, {}, clear=True):
+            self.assertEqual(
+                install._pids_in_current_session(["1", "2"], strict=True), [])
+
+    def test_capability_protected_process_is_kept(self) -> None:
+        """Alive-but-unreadable environ means keep, never drop.
+
+        File capabilities (kwin_wayland ships cap_sys_nice) make a process
+        non-dumpable, so /proc/<pid>/environ is EACCES even for its own
+        user. Dropping it made every KDE session read as "no KWin": the
+        bridge repair and the bridge self-check silently disabled
+        themselves, and a broken 0.17.0 install self-checked "healthy"
+        (observed 2026-08-10).
+        """
+
+        environs = {"/proc/1/environ": b"<unreadable>"}
+        self.assertEqual(self._filter(["1"], environs), ["1"])
+
+    def test_display_only_process_matches_a_wayland_session(self) -> None:
+        """Each display variable matches its own value, not each other's.
+
+        A KDE Wayland session exports both WAYLAND_DISPLAY=wayland-0 and
+        DISPLAY=:0; an XWayland-facing process carrying only DISPLAY=:0 is
+        still ours and must not be filtered out.
+        """
+
+        environs = {"/proc/1/environ": b"DISPLAY=:0\0HOME=/home/x\0"}
+        env = {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"}
+
+        def fake_path(spec: str) -> mock.Mock:
+            proc = mock.Mock()
+            proc.read_bytes.return_value = environs[spec]
+            return proc
+
+        with mock.patch.dict(install.os.environ, env, clear=True), \
+             mock.patch.object(install, "Path", side_effect=fake_path):
+            self.assertEqual(install._pids_in_current_session(["1"]), ["1"])
+
+
+class CheckImStackTests(unittest.TestCase):
+    """The self-check must catch a green-checklist install over a dead stack."""
+
+    def _run_check(
+        self, *,
+        daemons: list[str], kwin: bool, bridge: list[str], engines: list[str],
+        active_engine: str = DBUS_INTERFACE, name_has_owner: str = "(true,)",
+    ) -> list[str]:
+        def fake_run(
+            command: list[str | Path], **kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            del kwargs
+            argv = [str(part) for part in command]
+            if argv[:2] == ["ibus", "engine"]:
+                return _completed(stdout=f"{active_engine}\n")
+            if argv[0] == "gdbus":
+                return _completed(stdout=f"{name_has_owner}\n")
+            raise AssertionError(f"unexpected command {argv}")
+
+        with mock.patch.object(install, "_ibus_daemon_pids", return_value=daemons), \
+             mock.patch.object(install, "_kwin_wayland_running", return_value=kwin), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=bridge), \
+             mock.patch.object(install, "_pgrep_pids", return_value=engines), \
+             mock.patch.object(install, "_pids_in_current_session",
+                               side_effect=lambda pids, **_: pids), \
+             mock.patch.object(install, "run_command", side_effect=fake_run), \
+             mock.patch.object(install.shutil, "which", return_value="/usr/bin/gdbus"):
+            return install.check_im_stack()
+
+    def test_healthy_stack_reports_no_problems(self) -> None:
+        problems = self._run_check(
+            daemons=["1"], kwin=True, bridge=["2"], engines=["3"])
+        self.assertEqual(problems, [])
+
+    def test_missing_bridge_is_reported_with_relogin_hint(self) -> None:
+        problems = self._run_check(
+            daemons=["1"], kwin=True, bridge=[], engines=["3"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("log out", problems[0])
+
+    def test_bridge_not_required_without_kwin_wayland(self) -> None:
+        problems = self._run_check(
+            daemons=["1"], kwin=False, bridge=[], engines=["3"])
+        self.assertEqual(problems, [])
+
+    def test_wrong_active_engine_is_reported(self) -> None:
+        problems = self._run_check(
+            daemons=["1"], kwin=True, bridge=["2"], engines=["3"],
+            active_engine="xkb:us::eng")
+        self.assertTrue(any("active IBus engine" in p for p in problems))
+
+    def test_unowned_daemon_bus_name_is_reported(self) -> None:
+        problems = self._run_check(
+            daemons=["1"], kwin=True, bridge=["2"], engines=["3"],
+            name_has_owner="(false,)")
+        self.assertTrue(any("does not own" in p for p in problems))
+
+    def test_dead_stack_reports_every_layer(self) -> None:
+        problems = self._run_check(
+            daemons=[], kwin=True, bridge=[], engines=[],
+            active_engine="", name_has_owner="(false,)")
+        self.assertGreaterEqual(len(problems), 4)
+
+
+class InstallerArgumentTests(unittest.TestCase):
+    def test_installer_is_flagless(self) -> None:
+        """No options: every decision is derived or asked interactively.
+
+        Same-version repair — the job the short-lived ``--reconfigure`` flag
+        (0.15–0.17 pre-release) existed for — is an interactive prompt in
+        main() instead, so repairing a broken install never requires knowing
+        a flag exists.
+        """
+
+        install.parse_args([])  # bare invocation parses cleanly
+        with self.assertRaises(SystemExit):  # unknown flags still rejected
+            with mock.patch("sys.stderr", new=io.StringIO()):
+                install.parse_args(["--reconfigure"])
 
 
 class PromptUpdateTests(unittest.TestCase):
@@ -377,16 +874,32 @@ class QuietFailureTests(unittest.TestCase):
         self.assertNotIn("line 1\n", printed)
 
     def test_missing_build_dependencies_are_reported_by_package_name(self) -> None:
+        """A bare machine is told the FULL makedepends list up front.
+
+        The probe must mirror packaging/PKGBUILD's makedepends exactly —
+        Python packages, cmake, shaderc (glslc), and vulkan-headers — or a
+        clean install passes preflight and dies minutes into the
+        suppressed makepkg step.
+        """
+
         failed = subprocess.CompletedProcess(args=["python"], returncode=1, stdout="", stderr="")
-        with mock.patch.object(install, "run_command", return_value=failed):
+        with mock.patch.object(install, "run_command", return_value=failed), \
+             mock.patch.object(install.shutil, "which", return_value=None), \
+             mock.patch.object(install, "_VULKAN_HEADER_LANDMARK",
+                               Path("/nonexistent/vulkan.h")):
             self.assertEqual(
                 install._require_build_dependencies(),
-                ["python-build", "python-installer"],
+                ["python-build", "python-installer", "python-wheel",
+                 "python-setuptools", "python-pip", "cmake", "shaderc",
+                 "vulkan-headers"],
             )
 
     def test_present_build_dependencies_report_nothing_missing(self) -> None:
         ok = subprocess.CompletedProcess(args=["python"], returncode=0, stdout="", stderr="")
-        with mock.patch.object(install, "run_command", return_value=ok):
+        with mock.patch.object(install, "run_command", return_value=ok), \
+             mock.patch.object(install.shutil, "which",
+                               side_effect=lambda name: f"/usr/bin/{name}"), \
+             mock.patch.object(install, "_VULKAN_HEADER_LANDMARK", Path("/proc/version")):
             self.assertEqual(install._require_build_dependencies(), [])
 
 
@@ -398,28 +911,42 @@ class EnsureBuildDependenciesTests(unittest.TestCase):
             install, "_require_build_dependencies", side_effect=[missing, []]))
         self.enterContext(mock.patch.object(install, "_detect_distro", return_value="arch"))
         self.enterContext(mock.patch.object(install.shutil, "which", return_value="/usr/bin/sudo"))
+        self.enterContext(mock.patch.object(install, "install_log"))
 
     def test_accepting_installs_the_packages_as_dependencies(self) -> None:
-        """Build tooling is installed --asdeps, because that is what it is.
+        """Build tooling is installed --asdeps and reported for later removal.
 
-        Marking it explicit would stop an orphan sweep ever reclaiming it,
-        which is the installer overriding the machine's cleanup policy to
-        spare itself a round trip. Whether build tooling stays installed is
-        the user's call; all this has to guarantee is that a sweep never
-        leaves the next rebuild dead-ended, which re-installing on demand
-        already does.
+        --asdeps because that is what it is — tooling the build needs, not
+        something the user asked for — and because it is what lets the
+        post-build ``pacman -Rns`` (the makepkg --rmdeps half) reclaim it
+        cleanly. The return value is the removal list: exactly what this run
+        installed, never what was already on the machine.
         """
 
         self._patch_env(["python-build", "python-installer"])
         ok = subprocess.CompletedProcess(args=["pacman"], returncode=0, stdout="", stderr="")
-        with mock.patch("builtins.input", return_value=""):
-            with mock.patch.object(install, "run_command", return_value=ok) as run:
-                install.ensure_build_dependencies()
+        # The removal list is the -Qq diff of the transaction: it includes
+        # the dependency pacman pulled in (pyproject-hooks) that the probe
+        # could never know about, and nothing that predates the transaction.
+        snapshots = iter([
+            {"glibc", "python"},
+            {"glibc", "python", "python-build", "python-installer",
+             "python-pyproject-hooks"},
+        ])
+        with mock.patch("builtins.input", return_value=""), \
+             mock.patch.object(install, "_installed_package_set",
+                               side_effect=lambda: next(snapshots)), \
+             mock.patch.object(install, "run_command", return_value=ok) as run:
+            installed = install.ensure_build_dependencies()
 
         argv = run.call_args.args[0]
         self.assertEqual(argv[:5], ["sudo", "pacman", "-S", "--needed", "--asdeps"])
         self.assertIn("python-build", argv)
         self.assertIn("python-installer", argv)
+        self.assertEqual(
+            installed,
+            ["python-build", "python-installer", "python-pyproject-hooks"],
+        )
 
     def test_declining_stops_with_the_manual_command(self) -> None:
         self._patch_env(["python-installer"])
@@ -432,4 +959,84 @@ class EnsureBuildDependenciesTests(unittest.TestCase):
     def test_nothing_missing_prompts_for_nothing(self) -> None:
         with mock.patch.object(install, "_require_build_dependencies", return_value=[]):
             with mock.patch("builtins.input", side_effect=AssertionError("prompted")):
-                install.ensure_build_dependencies()
+                self.assertEqual(install.ensure_build_dependencies(), [])
+
+    def test_failed_snapshot_claims_nothing(self) -> None:
+        """Either snapshot unavailable → the cleanup list is empty. Period.
+
+        A failed *before* snapshot with a successful *after* snapshot would
+        otherwise diff to "every package on the machine was installed by
+        this run" and hand the entire system to pacman -R. Fail closed:
+        worst case is a few --asdeps orphans for the next sweep.
+        """
+
+        ok = subprocess.CompletedProcess(args=["pacman"], returncode=0, stdout="", stderr="")
+        for snapshots in ([None, {"glibc", "python-build"}], [{"glibc"}, None]):
+            with self.subTest(snapshots=snapshots):
+                self._patch_env(["python-build"])
+                seq = iter(snapshots)
+                with mock.patch("builtins.input", return_value=""), \
+                     mock.patch.object(install, "_installed_package_set",
+                                       side_effect=lambda: next(seq)), \
+                     mock.patch.object(install, "run_command", return_value=ok):
+                    self.assertEqual(install.ensure_build_dependencies(), [])
+
+
+class InstalledPackageSetTests(unittest.TestCase):
+    """None-on-failure is load-bearing: an empty set means 'diff everything'."""
+
+    def test_pacman_failure_returns_none_not_empty_set(self) -> None:
+        failed = subprocess.CompletedProcess(args=["pacman"], returncode=1, stdout="", stderr="")
+        with mock.patch.object(install, "run_command", return_value=failed):
+            self.assertIsNone(install._installed_package_set())
+
+    def test_empty_output_returns_none_not_empty_set(self) -> None:
+        empty = subprocess.CompletedProcess(args=["pacman"], returncode=0, stdout="", stderr="")
+        with mock.patch.object(install, "run_command", return_value=empty):
+            self.assertIsNone(install._installed_package_set())
+
+    def test_timeout_returns_none(self) -> None:
+        with mock.patch.object(
+            install, "run_command",
+            side_effect=subprocess.TimeoutExpired(cmd=["pacman"], timeout=30),
+        ):
+            self.assertIsNone(install._installed_package_set())
+
+    def test_success_returns_the_package_set(self) -> None:
+        ok = subprocess.CompletedProcess(
+            args=["pacman"], returncode=0, stdout="glibc\npython\n", stderr="")
+        with mock.patch.object(install, "run_command", return_value=ok):
+            self.assertEqual(install._installed_package_set(), {"glibc", "python"})
+
+
+class RemoveBuildDependenciesTests(unittest.TestCase):
+    """The makepkg --rmdeps half: the build host is left as it was found."""
+
+    def setUp(self) -> None:
+        self.install_log = self.enterContext(mock.patch.object(install, "install_log"))
+
+    def test_nothing_installed_means_nothing_removed(self) -> None:
+        with mock.patch.object(install, "run_command") as run:
+            install.remove_build_dependencies([])
+        run.assert_not_called()
+
+    def test_removes_exactly_what_this_run_installed(self) -> None:
+        ok = subprocess.CompletedProcess(args=["pacman"], returncode=0, stdout="", stderr="")
+        with mock.patch.object(install, "run_command", return_value=ok) as run:
+            install.remove_build_dependencies(["python-build", "python-wheel"])
+
+        argv = run.call_args.args[0]
+        # Plain -R: the list is the complete transaction diff, so recursive
+        # -s is unnecessary — and could walk past the transaction boundary
+        # into pre-existing dependency chains.
+        self.assertEqual(argv[:4], ["sudo", "pacman", "-R", "--noconfirm"])
+        self.assertEqual(argv[4:], ["python-build", "python-wheel"])
+
+    def test_failed_removal_is_logged_but_never_fatal(self) -> None:
+        refused = subprocess.CompletedProcess(
+            args=["pacman"], returncode=1, stdout="",
+            stderr="error: failed to prepare transaction")
+        with mock.patch.object(install, "run_command", return_value=refused):
+            install.remove_build_dependencies(["python-build"])
+        logged = " | ".join(str(call.args[0]) for call in self.install_log.call_args_list)
+        self.assertIn("could not remove", logged)

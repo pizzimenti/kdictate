@@ -20,8 +20,10 @@ Everything lives under ``$HOME``:
 from __future__ import annotations
 
 import argparse
+import datetime
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -38,7 +40,7 @@ from kdictate.app_metadata import (
     GGML_MODEL_HF_REPO,
     GGML_MODEL_PATH,
 )
-from kdictate.constants import APP_ROOT_ID, DBUS_INTERFACE
+from kdictate.constants import APP_ROOT_ID, DBUS_BUS_NAME, DBUS_INTERFACE
 
 PACKAGE_NAME: Final[str] = "kdictate"
 SERVICE_NAME = f"{APP_ROOT_ID}.service"
@@ -116,6 +118,49 @@ def step_done(detail: str = "") -> None:
 def die(message: str) -> NoReturn:
     print(f"\n  \u274c  {message}\n", file=sys.stderr)
     raise SystemExit(1)
+
+
+# -------------------------------------------------------------------
+# Persistent install log
+# -------------------------------------------------------------------
+
+def _state_log_dir() -> Path:
+    """Mirror kdictate.logging_utils._resolve_log_dir (without the mkdir).
+
+    Kept in sync by hand rather than imported: the runtime helper creates
+    the directory as a side effect, which an import-time constant must not.
+    """
+
+    state_home = os.environ.get("XDG_STATE_HOME")
+    if state_home:
+        return Path(state_home) / "kdictate"
+    return Path.home() / ".local" / "state" / "kdictate"
+
+
+INSTALL_LOG_PATH = _state_log_dir() / "install.log"
+
+
+def install_log(message: str) -> None:
+    """Append a timestamped line to the persistent install log.
+
+    The checklist UI intentionally hides what the installer does to the
+    session's input-method stack, which made past breakage undiagnosable
+    after the fact ("what did the install actually kill?"). Every IBus
+    mutation \u2014 process kills, daemon state decisions, repair attempts and
+    their outcomes \u2014 lands here so the next incident is answerable from
+    ``~/.local/state/kdictate/install.log`` alongside the daemon and
+    engine logs in the same directory.
+
+    Best-effort by design: a logging failure must never break an install.
+    """
+
+    try:
+        INSTALL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        with INSTALL_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(f"{stamp} {message}\n")
+    except OSError:
+        pass
 
 
 # -------------------------------------------------------------------
@@ -457,18 +502,38 @@ def configure_preload_engines(ctx: InstallContext) -> None:
 def configure_kwin_input_method(ctx: InstallContext) -> None:
     if shutil.which("kwriteconfig6") is None:
         return
+    kwinrc = ctx.home / ".config" / "kwinrc"
     if KDE_VIRTUAL_KEYBOARD_DESKTOP.is_file():
+        # --notify so KWin's KConfigWatcher sees the change and launches
+        # the input method NOW (a plain write only lands at next login).
+        # Idempotent: when the value is unchanged, KWin's
+        # setInputMethodCommand early-returns and nothing is disturbed.
         run_command([
-            "kwriteconfig6", "--file", ctx.home / ".config" / "kwinrc",
+            "kwriteconfig6", "--notify", "--file", kwinrc,
             "--group", "Wayland", "--key", "InputMethod",
             KDE_VIRTUAL_KEYBOARD_DESKTOP,
         ])
     else:
         log(f"Warning: {KDE_VIRTUAL_KEYBOARD_DESKTOP} not found")
-    run_command([
-        "kwriteconfig6", "--file", ctx.home / ".config" / "kwinrc",
-        "--group", "Wayland", "--key", "VirtualKeyboardEnabled", "true",
-    ])
+
+    # Plasma 6.7 reads the legacy VirtualKeyboardEnabled bool only when the
+    # newer VirtualKeyboardMode key is absent. If the user has set a mode,
+    # that is their configuration — respect it and record it rather than
+    # fighting the KCM over the file.
+    mode = ""
+    if shutil.which("kreadconfig6") is not None:
+        mode = run_command(
+            ["kreadconfig6", "--file", kwinrc,
+             "--group", "Wayland", "--key", "VirtualKeyboardMode"],
+            quiet=True, check=False,
+        ).stdout.strip()
+    if mode:
+        install_log(f"kwinrc VirtualKeyboardMode={mode!r} already set; not touching it")
+    else:
+        run_command([
+            "kwriteconfig6", "--notify", "--file", kwinrc,
+            "--group", "Wayland", "--key", "VirtualKeyboardEnabled", "true",
+        ])
 
 
 def register_global_shortcut(ctx: InstallContext) -> None:
@@ -478,8 +543,8 @@ def register_global_shortcut(ctx: InstallContext) -> None:
     the case that most needs repairing. Plasma rewrites kglobalshortcutsrc on
     its own — a shortcut reset or a conflict can drop or change the ``_launch``
     line while leaving the section behind — and the binding is then broken
-    with no way for ``--reconfigure`` to restore it, which is precisely what
-    that flag advertises.
+    with no way for the same-version repair run to restore it, which is
+    precisely what that run advertises.
     """
 
     shortcut_file = ctx.home / ".config" / "kglobalshortcutsrc"
@@ -559,99 +624,429 @@ def clear_stale_engine_processes() -> int:
     found = run_command(["pgrep", *select], quiet=True, check=False)
     pids = [tok for tok in found.stdout.split() if tok.isdigit()]
     if not pids:
+        install_log("no stale engine processes")
         return 0
 
+    install_log(f"killing stale engine process(es) pid {','.join(pids)}")
     run_command(["pkill", *select], quiet=True, check=False)
     time.sleep(0.5)
 
     survivors = run_command(["pgrep", *select], quiet=True, check=False)
-    if [tok for tok in survivors.stdout.split() if tok.isdigit()]:
+    survivor_pids = [tok for tok in survivors.stdout.split() if tok.isdigit()]
+    if survivor_pids:
+        install_log(f"SIGKILL for surviving engine process(es) pid {','.join(survivor_pids)}")
         run_command(["pkill", "-9", *select], quiet=True, check=False)
 
     return len(pids)
 
 
+# The Wayland IM bridge KWin spawns from the kwinrc [Wayland] InputMethod
+# desktop file. Its --exec-daemon child *is* the session's ibus-daemon; the
+# two live and die together.
+_WAYLAND_BRIDGE_PATTERN = "ibus-ui-gtk3.*--enable-wayland-im"
+
+
+def _pgrep_pids(pattern: str, *, exact_name: bool = False) -> list[str]:
+    """Return this user's PIDs whose command line (or name) matches."""
+
+    if shutil.which("pgrep") is None:
+        return []
+    match_flag = "-x" if exact_name else "-f"
+    result = run_command(
+        ["pgrep", "-u", str(os.getuid()), match_flag, pattern],
+        quiet=True, check=False,
+    )
+    return [tok for tok in result.stdout.split() if tok.isdigit()]
+
+
+def _pids_in_current_session(pids: list[str], *, strict: bool = False) -> list[str]:
+    """Filter PIDs by graphical session membership.
+
+    One account can run several concurrent graphical sessions, and a
+    UID-wide pgrep sees all of them: session A's healthy bridge must not
+    make a bridge-less session B skip its repair (or vice versa). IBus
+    keys its per-session state by display name, so a process whose
+    WAYLAND_DISPLAY/DISPLAY differs from ours is another session's.
+
+    Two modes, because detection and destruction have opposite safe
+    defaults:
+
+    * ``strict=False`` (detection): unclassifiable processes are KEPT —
+      capability-protected processes (kwin_wayland ships cap_sys_nice, so
+      its environ is EACCES even for its own user) and processes with no
+      display variable. Dropping them made every KDE session read as "no
+      KWin" and silently disabled the bridge repair and self-check
+      (observed 2026-08-10).
+    * ``strict=True`` (kill selection): only processes whose environment
+      POSITIVELY matches this session survive the filter. A process we
+      cannot attribute must never be killed on a guess — fail closed.
+    """
+
+    # Each variable is matched against its own value: a session exporting
+    # WAYLAND_DISPLAY=wayland-0 *and* DISPLAY=:0 must accept a process that
+    # carries either one.
+    ours = {
+        f"{key}={value}".encode()
+        for key in ("WAYLAND_DISPLAY", "DISPLAY")
+        if (value := os.environ.get(key))
+    }
+    if not ours:
+        return [] if strict else pids
+    kept: list[str] = []
+    for pid in pids:
+        try:
+            entries = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        except PermissionError:
+            if not strict:
+                kept.append(pid)  # alive but unreadable: unclassifiable
+        except OSError:
+            continue  # process exited between pgrep and now
+        else:
+            if ours.intersection(entries):
+                kept.append(pid)
+            elif not strict and not any(
+                entry.startswith((b"WAYLAND_DISPLAY=", b"DISPLAY="))
+                for entry in entries
+            ):
+                kept.append(pid)  # no display var at all: unclassifiable
+    return kept
+
+
+def _wayland_bridge_pids() -> list[str]:
+    return _pids_in_current_session(_pgrep_pids(_WAYLAND_BRIDGE_PATTERN))
+
+
+def _ibus_daemon_pids(*, strict: bool = False) -> list[str]:
+    """This session's ibus-daemon PIDs.
+
+    ``strict=True`` returns only positively-attributed PIDs — the required
+    mode for anything that kills (see _pids_in_current_session).
+    """
+
+    return _pids_in_current_session(
+        _pgrep_pids("ibus-daemon", exact_name=True), strict=strict)
+
+
+def _kwin_wayland_running() -> bool:
+    # Session-scoped like the other probes: an X11 session running this
+    # installer must not mistake a *different* session's kwin_wayland for
+    # its own compositor.
+    return bool(_pids_in_current_session(_pgrep_pids("kwin_wayland", exact_name=True)))
+
+
+def _pid_alive(pid: str) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _qdbus_bin() -> str | None:
+    for candidate in ("qdbus6", "qdbus"):
+        if shutil.which(candidate) is not None:
+            return candidate
+    return None
+
+
 def refresh_ibus_registry(ctx: InstallContext) -> None:
+    """Refresh IBus after the on-disk engine changed — without breaking it.
+
+    History, because this function has now caused two distinct outages:
+
+    Earlier versions killed ibus-daemon here and toggled KWin's
+    ``org.kde.kwin.VirtualKeyboard.enabled`` property to make KWin respawn
+    the whole input-method stack. Plasma 6.7 removed that property, so the
+    toggle failed on every install *after* the daemon was already dead, and
+    the fallback started a bare ``ibus-daemon -r -d`` with no Wayland IM
+    bridge. Result (diagnosed 2026-08-10): the engine received transcripts
+    and committed them, but ``ss -xp`` showed no compositor or application
+    attached to the new daemon's socket — every commit vanished, and only a
+    relogin (which lets KWin respawn the bridge) recovered typing. This is
+    why "install → broken, reboot → fixed" recurred across 0.14–0.16.
+
+    The rules now:
+
+    * NEVER kill a healthy ibus-daemon. IBus spawns engine processes on
+      demand, so shipping new engine code needs only a registry write-cache
+      plus killing the old engine processes.
+    * Only when the Wayland IM bridge is already missing — the session's
+      typing path is already dead, nothing left to protect — attempt a
+      KWin-driven relaunch of the full stack (see repair_wayland_im_bridge).
+    """
+
     ibus_env = {
         "IBUS_COMPONENT_PATH": (
             f"{ctx.home / '.local/share/ibus/component'}:/usr/share/ibus/component"
         )
     }
-    # Update IBus component registry so ibus-daemon knows about the new engine.
-    run_command(["ibus", "write-cache"], env=ibus_env, quiet=True)
+    # Update IBus component registry so ibus-daemon knows about the new
+    # engine. Bounded like every other IBus/D-Bus call: a wedged daemon
+    # must degrade to a logged warning, not a hung silent step.
+    try:
+        run_command(["ibus", "write-cache"], env=ibus_env, quiet=True, timeout=15)
+        install_log("ibus write-cache completed")
+    except subprocess.TimeoutExpired:
+        install_log("ibus write-cache timed out after 15s (continuing)")
 
-    # Clear engine processes left over from before this upgrade, before the
-    # daemon is restarted below.
+    # Clear engine processes left over from before this upgrade so the next
+    # activation spawns a fresh engine running the just-installed code.
     clear_stale_engine_processes()
 
-    # Tell KWin to re-read kwinrc so it picks up the InputMethod key written
-    # by configure_kwin_input_method in the same install run.  Without this,
-    # KWin still has a null InputMethod in memory and the toggle below does
-    # nothing because there's no input method desktop file to launch.
-    qdbus_bin: str | None = None
-    for candidate in ("qdbus6", "qdbus"):
-        if shutil.which(candidate) is not None:
-            qdbus_bin = candidate
-            break
-    if qdbus_bin is None:
-        # Without qdbus6/qdbus we have no recovery path: killing the daemon
-        # below would leave the user with a broken IM stack and no way to
-        # bring it back without logout.  Skip the hot-start entirely; the
-        # next session login picks up the new InputMethod desktop file.
+    # Without pgrep, every probe below reads as "nothing running" and a
+    # healthy session would be misclassified as a cold start — whose
+    # ``ibus-daemon -r`` (--replace) would evict the compositor-managed
+    # daemon and sever the very stack this function exists to protect.
+    # Unknown state gets hands-off, not repair.
+    if shutil.which("pgrep") is None:
+        install_log("pgrep unavailable; IM stack state unknown, leaving it untouched")
         return
 
-    # KWin must be reachable on the session bus for the toggle below to do
-    # anything useful.  If reconfigure fails (non-KDE session, transient D-Bus
-    # failure, etc.), there's no point killing the daemon — the toggle won't
-    # recover it either, and we'd leave the user worse off than we found them.
-    reconfigure = run_command(
-        [qdbus_bin, "org.kde.KWin", "/KWin", "reconfigure"],
-        quiet=True, check=False,
-    )
-    if reconfigure.returncode != 0:
+    bridge = _wayland_bridge_pids()
+    daemons = _ibus_daemon_pids()
+
+    if not _kwin_wayland_running():
+        # Non-KDE-Wayland session: there is no bridge to manage. Make sure a
+        # daemon exists for the cold-start case and leave everything else
+        # alone. Both outcomes are logged — a silent branch here is how a
+        # mis-detected session once skipped the bridge repair unnoticed.
+        if not daemons:
+            install_log("no ibus-daemon and no kwin_wayland; starting plain ibus-daemon")
+            run_command(["ibus-daemon", "-r", "-d"], quiet=True, check=False)
+        else:
+            install_log(
+                f"no kwin_wayland in this session; ibus-daemon pid "
+                f"{','.join(daemons)} present, leaving it untouched"
+            )
         return
 
-    # Kill any stale ibus-daemon so the toggle below has a clean slate.  KWin
-    # only spawns ibus-ui-gtk3 --enable-wayland-im on a true cold-start of the
-    # input method; if a daemon is already registered on the session bus
-    # (especially one started with --panel disable), the toggle no-ops and we
-    # end up with a daemon but no Wayland IM bridge.  If pkill is unavailable
-    # (unusual but possible on minimal containers), there's no way to clear a
-    # stale daemon and the toggle would no-op — skip the hot-start so the
-    # next session login picks up the new InputMethod cleanly.
-    if shutil.which("pkill") is None:
-        return
-    run_command(["pkill", "-x", "ibus-daemon"], quiet=True, check=False)
-    time.sleep(0.5)
-
-    # Toggle KWin's VirtualKeyboard.enabled from false to true.  This is the
-    # signal that makes KWin invoke the InputMethod desktop file:
-    #   ibus-ui-gtk3 --enable-wayland-im --exec-daemon …
-    # which spawns both the daemon and the Wayland IM bridge in one shot.
-    # Empirically, "ibus restart" does NOT trigger this — it re-execs the
-    # daemon in place with the same args, so KWin sees no D-Bus name change
-    # and the bridge is never launched.
-    toggle_ok = True
-    for value in ("false", "true"):
-        result = run_command(
-            [qdbus_bin, "--literal", "org.kde.KWin", "/VirtualKeyboard",
-             "org.freedesktop.DBus.Properties.Set",
-             "org.kde.kwin.VirtualKeyboard", "enabled", value],
-            quiet=True, check=False,
+    if bridge and daemons:
+        install_log(
+            f"IM stack healthy (bridge pid {','.join(bridge)}, "
+            f"ibus-daemon pid {','.join(daemons)}); leaving it untouched"
         )
-        if result.returncode != 0:
-            toggle_ok = False
-            break
+        return
+
+    install_log(
+        f"IM stack incomplete (bridge={bridge or 'none'}, "
+        f"ibus-daemon={daemons or 'none'}); attempting KWin relaunch"
+    )
+    repair_wayland_im_bridge(ctx)
+
+
+def repair_wayland_im_bridge(ctx: InstallContext) -> None:
+    """Make KWin relaunch its input-method stack (bridge + ibus-daemon).
+
+    The mechanism (traced in KWin 6.7.4 source, second-opinion review
+    2026-08-10): ApplicationWayland watches kwinrc through a
+    KConfigWatcher; a *notified* change to ``[Wayland] InputMethod`` calls
+    refreshSettings() → InputMethod::setInputMethodCommand(), which stops
+    the old process, creates a fresh private Wayland connection, exports
+    its FD as WAYLAND_SOCKET, and QProcess-launches the desktop file's
+    Exec. Three hard-won facts encode the contract here:
+
+    * ``kwriteconfig6`` MUST be passed ``--notify`` — a plain write changes
+      the file but never fires KConfigWatcher, so nothing happens (that
+      exact silence was tonight's failed repair).
+    * ``qdbus org.kde.KWin /KWin reconfigure`` is NOT part of this path —
+      Workspace::slotReconfigure() never touches the input method. Do not
+      resurrect it.
+    * Writing the *same* value is a no-op (KWin early-returns when the new
+      Exec equals m_inputMethodCommand), so a dead process with an
+      unchanged config needs the notified delete → notified restore pair.
+
+    (The pre-Plasma-6.7 ``VirtualKeyboard.enabled`` D-Bus toggle this
+    replaced is gone; ``/VirtualKeyboard`` today exposes no method that
+    relaunches the process.)
+
+    Only called when the bridge is already missing, i.e. the session's
+    typing path is already severed — so the daemon kill below cannot make
+    anything worse than it already is.
+    """
+
+    qdbus_bin = _qdbus_bin()
+    if qdbus_bin is None or shutil.which("kwriteconfig6") is None:
+        install_log("bridge repair skipped: qdbus6/kwriteconfig6 unavailable")
+        return
+    if not KDE_VIRTUAL_KEYBOARD_DESKTOP.is_file():
+        install_log(f"bridge repair skipped: {KDE_VIRTUAL_KEYBOARD_DESKTOP} missing")
+        return
+
+    # KWin must be on the session bus for the notified writes to reach a
+    # listener. Introspection only — no side effects. Bounded so a wedged
+    # KWin cannot hang the quiet install step.
+    try:
+        probe = run_command(
+            [qdbus_bin, "org.kde.KWin", "/KWin"],
+            quiet=True, check=False, timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        install_log("bridge repair skipped: KWin did not answer within 10s")
+        return
+    if probe.returncode != 0:
+        install_log("bridge repair skipped: KWin not reachable on the session bus")
+        return
+
+    # configure_kwin_input_method's own notified write earlier in this run
+    # may have just launched the stack (first install, or a session where
+    # the key was previously absent). Re-check before treating the daemon
+    # as bridgeless, or we would kill a stack that just became healthy.
+    time.sleep(1.0)
+    if _wayland_bridge_pids() and _ibus_daemon_pids():
+        install_log("IM stack became healthy before repair; nothing to do")
+        return
+
+    # A bare ibus-daemon (the broken-session shape this repairs) would
+    # collide with the daemon the relaunched bridge execs. Clear it first —
+    # only PIDs POSITIVELY attributed to this session (strict): killing is
+    # the one operation where an unclassifiable process must be left alone.
+    stale = _ibus_daemon_pids(strict=True)
+    unattributed = set(_ibus_daemon_pids()) - set(stale)
+    if unattributed:
+        install_log(
+            f"bridge repair: leaving unattributed ibus-daemon pid "
+            f"{','.join(sorted(unattributed))} alone (cannot prove session)"
+        )
+    if stale:
+        install_log(f"killing bridgeless ibus-daemon pid {','.join(stale)}")
+        for pid in stale:
+            try:
+                os.kill(int(pid), signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+        # Confirm the exit rather than assuming it: a daemon that survives
+        # SIGTERM would collide with the relaunched bridge's --exec-daemon
+        # child, and the poll at the bottom could then declare success over
+        # a stack that is about to fall apart again.
+        for _ in range(10):
+            stale = [pid for pid in stale if _pid_alive(pid)]
+            if not stale:
+                break
+            time.sleep(0.2)
+        if stale:
+            for pid in stale:
+                try:
+                    os.kill(int(pid), signal.SIGKILL)
+                except (ProcessLookupError, PermissionError):
+                    pass
+            time.sleep(0.2)
+            stale = [pid for pid in stale if _pid_alive(pid)]
+        if stale:
+            install_log(
+                f"bridge repair aborted: ibus-daemon pid {','.join(stale)} "
+                "survived SIGKILL"
+            )
+            return
+
+    kwinrc = ctx.home / ".config" / "kwinrc"
+
+    def _restore_input_method() -> None:
+        # --notify on the restore too: it is the write that makes KWin
+        # actually launch the fresh stack.
+        restored = run_command([
+            "kwriteconfig6", "--notify", "--file", kwinrc,
+            "--group", "Wayland", "--key", "InputMethod",
+            KDE_VIRTUAL_KEYBOARD_DESKTOP,
+        ], quiet=True, check=False)
+        if restored.returncode != 0:
+            install_log(
+                "bridge repair CRITICAL: could not restore [Wayland] InputMethod "
+                f"in {kwinrc}; set it to {KDE_VIRTUAL_KEYBOARD_DESKTOP} manually"
+            )
+
+    # The delete/restore pair must not be separable: a Ctrl+C or crash
+    # between them would leave kwinrc without an InputMethod key, and then
+    # even the next-login recovery is gone — KWin would never launch a
+    # bridge again until the key is put back by hand.
+    try:
+        run_command([
+            "kwriteconfig6", "--notify", "--file", kwinrc,
+            "--group", "Wayland", "--key", "InputMethod", "--delete",
+        ], quiet=True, check=False)
+        # Let KWin process the notified empty command (it clears
+        # m_inputMethodCommand, so the restore below reads as a change).
+        time.sleep(1.0)
+    finally:
+        _restore_input_method()
+
+    # KWin spawns the bridge asynchronously; give it a bounded window.
+    # Success requires the bridge AND its --exec-daemon child: a bridge
+    # that appeared but whose daemon died is not a working typing path.
+    for _ in range(20):
+        bridge = _wayland_bridge_pids()
+        daemons = _ibus_daemon_pids()
+        if bridge and daemons:
+            install_log(
+                f"bridge repair succeeded (bridge pid {','.join(bridge)}, "
+                f"ibus-daemon pid {','.join(daemons)})"
+            )
+            return
         time.sleep(0.5)
 
-    # If the toggle failed after we killed the daemon (transient session-bus
-    # error, /VirtualKeyboard interface unavailable, etc.), the user is left
-    # with no IBus running and no Wayland IM bridge.  Best-effort fallback:
-    # spin up ibus-daemon as a plain background process so basic IBus works.
-    # The Wayland bridge won't be active without KWin spawning it, but that
-    # recovers automatically at the next login.
-    if not toggle_ok:
+    install_log("bridge repair FAILED: no bridge+daemon pair appeared within 10s")
+    # Last resort so basic IBus (X11/XWayland clients) still works; the
+    # Wayland typing path stays down until the next login.
+    if not _ibus_daemon_pids():
         run_command(["ibus-daemon", "-r", "-d"], quiet=True, check=False)
+        install_log("started plain ibus-daemon as fallback (no Wayland bridge)")
+
+
+def check_im_stack() -> list[str]:
+    """Verify the full input-method chain after an install.
+
+    Every prior outage in this project shipped behind a green checklist:
+    the installer verified its own steps but never the state it left the
+    session in. This check covers the chain a dictated transcript must
+    traverse — daemon bus name → engine process → active engine →
+    ibus-daemon → Wayland bridge — and returns human-readable problems
+    instead of letting the summary claim success over a severed stack.
+    """
+
+    problems: list[str] = []
+
+    if not _ibus_daemon_pids():
+        problems.append("ibus-daemon is not running")
+
+    if _kwin_wayland_running() and not _wayland_bridge_pids():
+        problems.append(
+            "the Wayland IM bridge (ibus-ui-gtk3 --enable-wayland-im) is not "
+            "running — committed text cannot reach applications until you "
+            "log out and back in"
+        )
+
+    try:
+        active = run_command(["ibus", "engine"], quiet=True, check=False, timeout=10)
+    except subprocess.TimeoutExpired:
+        problems.append("ibus engine query timed out (wedged ibus-daemon?)")
+    else:
+        active_name = active.stdout.strip()
+        if active.returncode != 0 or active_name != DBUS_INTERFACE:
+            problems.append(
+                f"active IBus engine is {active_name or 'unknown'!r}, "
+                f"expected {DBUS_INTERFACE!r}"
+            )
+
+    # Session-scoped like every other probe: another session's engine must
+    # not make this session's absent engine look present.
+    if not _pids_in_current_session(_pgrep_pids(_ENGINE_PROCESS_PATTERN)):
+        problems.append("no kdictate engine process is running")
+
+    if shutil.which("gdbus") is not None:
+        owner = run_command(
+            ["gdbus", "call", "--session",
+             "--dest", "org.freedesktop.DBus",
+             "--object-path", "/org/freedesktop/DBus",
+             "--method", "org.freedesktop.DBus.NameHasOwner", DBUS_BUS_NAME],
+            quiet=True, check=False,
+        )
+        if owner.returncode == 0 and "true" not in owner.stdout:
+            problems.append(
+                f"kdictate daemon does not own {DBUS_BUS_NAME} on the session bus"
+            )
+
+    return problems
 
 
 def reload_systemd_user(ctx: InstallContext) -> None:
@@ -773,47 +1168,71 @@ def _require_build_dependencies() -> list[str]:
     # present when pacman has never heard of it -- the user installs only what
     # was reported, re-runs, and makepkg dies at `python -m build` anyway.
     # -I closes both (it implies -P, -E and -s).
-    missing = [
-        package
-        for module, package in (("build", "python-build"), ("installer", "python-installer"))
+    # Mirrors packaging/PKGBUILD's makedepends exactly — every entry, not
+    # just the Python ones, so a clean machine is told everything up front
+    # instead of dying minutes into the suppressed makepkg step.
+    missing: list[str] = []
+
+    for module, package in (
+        ("build", "python-build"),
+        ("installer", "python-installer"),
+        ("wheel", "python-wheel"),
+        ("setuptools", "python-setuptools"),
+        ("pip", "python-pip"),
+    ):
         if run_command(
             [sys.executable, "-I", "-c", f"import {module}"],
             quiet=True, check=False, cwd=Path.home(),
-        ).returncode != 0
-    ]
+        ).returncode != 0:
+            missing.append(package)
+
+    for binary, package in (
+        ("cmake", "cmake"),
+        ("glslc", "shaderc"),  # compiles the ggml Vulkan shaders
+    ):
+        if shutil.which(binary) is None:
+            missing.append(package)
+
+    # vulkan-headers ships no binary; probe its landmark header.
+    if not _VULKAN_HEADER_LANDMARK.is_file():
+        missing.append("vulkan-headers")
+
     return missing
 
 
-def ensure_build_dependencies() -> None:
+# Module constant so tests can point the probe at a controlled path.
+_VULKAN_HEADER_LANDMARK = Path("/usr/include/vulkan/vulkan.h")
+
+
+def ensure_build_dependencies() -> list[str]:
     """Install the rebuild's build dependencies, with consent.
 
-    Called during preflight rather than from inside the rebuild step, so the
-    pacman transaction and its password prompt happen in the open, before the
-    quiet one-screen checklist starts — not buried inside a step whose output
-    is suppressed. That was why ``makepkg --syncdeps`` was dropped; refusing
-    to install them at all was an overcorrection that left the user to run a
-    command and start over.
+    Returns the packages installed *by this run* — the caller hands them to
+    :func:`remove_build_dependencies` after a successful build, completing
+    the ``makepkg --syncdeps --rmdeps`` emulation: build deps land only for
+    the duration of the build, and the host is left as it was found. (The
+    syncdeps half is hand-rolled here rather than delegated to ``makepkg -s``
+    so the pacman transaction and its password prompt happen in the open,
+    before the quiet one-screen checklist starts.)
 
     Installed with ``--asdeps``, because that is what they are: tooling this
-    build needs, not something the user asked to have on their system.
-    Marking them explicit would keep an orphan sweep from ever reclaiming
-    them, which is the installer overriding the machine's cleanup policy to
-    protect itself from a round trip. Whether build tooling stays installed
-    is the user's call — ``makepkg --rmdeps`` and ``yay --removemake`` exist
-    precisely so it can be — and this only has to guarantee that a sweep
-    never leaves the next rebuild dead-ended, which re-installing on demand
-    already does.
+    build needs, not something the user asked to have on their system — and
+    it is also what makes the post-build ``-Rns`` clean removal work.
+    Packages that were *already present* before this run are never touched:
+    they belong to the machine, not to this build.
     """
 
     missing = _require_build_dependencies()
     if not missing:
-        return
+        return []
 
     distro = _detect_distro()
     hint = _pkg_hint(distro, " ".join(missing))
     print("  The package rebuild needs these build dependencies:\n")
     for package in missing:
         print(f"      {package}")
+    print("\n  They are only needed during the build and will be removed"
+          "\n  again once it succeeds (makepkg --rmdeps behaviour).")
     print()
 
     if distro != "arch" or shutil.which("sudo") is None:
@@ -827,6 +1246,7 @@ def ensure_build_dependencies() -> None:
             die(f"Install them first:\n\n      {hint}\n\n      Then re-run this installer.")
 
     print()
+    before = _installed_package_set()
     result = run_command(
         ["sudo", "pacman", "-S", "--needed", "--asdeps", *missing], check=False,
     )
@@ -839,6 +1259,79 @@ def ensure_build_dependencies() -> None:
         die(
             "These are still not importable after installing:\n\n"
             + "".join(f"        {package}\n" for package in still_missing)
+        )
+
+    # What this run actually put on the system is the -Qq diff around the
+    # transaction, not the probe list: --needed skips anything that appeared
+    # since the probe (so it is never claimed), and the diff also captures
+    # the dependencies pacman pulled in alongside — which the probe cannot
+    # know about.
+    #
+    # FAIL CLOSED on either snapshot: a failed *before* snapshot with a
+    # successful *after* snapshot would otherwise classify every package on
+    # the machine as "installed by this run" and hand the whole system to
+    # pacman -R. Claiming nothing merely leaves --asdeps orphans for the
+    # next sweep — the safe direction. (Note: there is also no lock held
+    # between the transaction and the after-snapshot, so the diff is
+    # best-effort attribution, never authority for anything destructive
+    # beyond what it positively observed appear.)
+    after = _installed_package_set()
+    if before is None or after is None:
+        install_log(
+            "build-dep cleanup skipped: package snapshot unavailable; "
+            "claiming nothing (fail closed)"
+        )
+        return []
+    installed = sorted(after - before)
+    if installed:
+        install_log(f"installed build dependencies for this run: {', '.join(installed)}")
+    return installed
+
+
+def _installed_package_set() -> set[str] | None:
+    """Return the set of installed packages, or ``None`` when unknowable.
+
+    ``None`` (not an empty set) on failure is load-bearing: an empty set
+    means "nothing installed", which turns a failed snapshot into a diff
+    that claims everything. Callers must treat ``None`` as "do not act".
+    """
+
+    try:
+        result = run_command(["pacman", "-Qq"], quiet=True, check=False, timeout=30)
+    except subprocess.TimeoutExpired:
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return set(result.stdout.split())
+
+
+def remove_build_dependencies(packages: list[str]) -> None:
+    """Remove build deps this run installed — the ``makepkg --rmdeps`` half.
+
+    Only ever called with :func:`ensure_build_dependencies`'s return value:
+    the exact ``pacman -Qq`` diff of its transaction, dependencies included.
+    Because that list is complete, a plain ``-R`` suffices — no recursive
+    ``-s``, which could otherwise walk past the transaction boundary into
+    dependency chains that were already on the machine.
+
+    Best-effort: if pacman refuses (something started depending on one of
+    them mid-build, say), the packages just stay behind as ``--asdeps``
+    orphans — exactly the pre-cleanup status quo — and the install log says
+    so. A failed cleanup must never fail an otherwise-successful install.
+    """
+
+    if not packages:
+        return
+    result = run_command(
+        ["sudo", "pacman", "-R", "--noconfirm", *packages],
+        quiet=True, check=False,
+    )
+    if result.returncode == 0:
+        install_log(f"removed build dependencies: {', '.join(packages)}")
+    else:
+        install_log(
+            f"could not remove build dependencies ({', '.join(packages)}); "
+            "left installed as --asdeps: " + result.stderr.strip()
         )
 
 
@@ -878,7 +1371,13 @@ def rebuild_and_install_package(ctx: InstallContext) -> None:
         _die_with_output("Package build failed", result)
 
     built = sorted(
-        pkg_dir.glob(f"{PACKAGE_NAME}-{__version__}-*.pkg.tar.*"),
+        (
+            path
+            for path in pkg_dir.glob(f"{PACKAGE_NAME}-{__version__}-*.pkg.tar.*")
+            # A detached signature sorts newer than the package it signs;
+            # handing kdictate-…pkg.tar.zst.sig to pacman -U fails the install.
+            if not path.name.endswith(".sig")
+        ),
         key=lambda path: path.stat().st_mtime,
     )
     if not built:
@@ -954,26 +1453,26 @@ def _write_backend_dropin(ctx: InstallContext) -> None:
 # -------------------------------------------------------------------
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse the installer's own options."""
+    """Parse the installer's own options.
+
+    Deliberately flagless: every decision the installer makes is either
+    derived from the system state or asked interactively. The one flag
+    that briefly existed (``--reconfigure``, 0.15–0.17 pre-release) is
+    now the same-version *prompt* in main() — the repair path should not
+    require knowing a flag exists.
+    """
 
     parser = argparse.ArgumentParser(
         prog="install.py",
         description="Install or update KDictate for the current user.",
     )
-    parser.add_argument(
-        "--reconfigure",
-        action="store_true",
-        help="Re-run the configuration steps even when the installed version "
-             "already matches this tree. Use this to repair a broken install "
-             "-- a clobbered Ctrl+Space binding, a missing IBus engine "
-             "registration, a backend switch -- without having to change the "
-             "version number first.",
-    )
     return parser.parse_args(argv)
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+    # Flagless by design — this still rejects unknown options and serves
+    # --help rather than silently ignoring a typo'd invocation.
+    parse_args(argv)
 
     if os.geteuid() == 0:
         die(
@@ -992,30 +1491,40 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"\n  KDictate {__version__} installer\n")
 
-    # Version gate first, before any other prompt: a system that is already
-    # current should cost one command and no questions.
-    #
-    # --reconfigure exists because every configuration step below is
+    # Version gate first, before any other prompt. Same-version runs get a
+    # repair *prompt* rather than a flag: every configuration step below is
     # idempotent and re-running them is the documented repair path (a Plasma
     # reset clobbers the Ctrl+Space binding, the IBus preload list loses its
-    # entry, the backend needs switching). Gating those behind a version
-    # change would leave a user whose install is broken *at the current
-    # version* with no way to fix it short of editing app_metadata.py, so the
-    # exit below names the flag rather than just refusing.
+    # entry, the Wayland IM bridge is severed, the backend needs switching).
+    # Gating repair behind a version change would leave a user whose install
+    # is broken *at the current version* with no way to fix it; hiding it
+    # behind a flag would leave them needing to know the flag exists. The
+    # default answer is No, so an accidental re-run still costs nothing.
     packaged = _is_packaged_install()
     installed = _installed_version(ctx, packaged)
     up_to_date = installed is not None and installed == __version__
 
-    if up_to_date and not args.reconfigure:
-        print(f"  Already at {__version__} — nothing to do.")
-        print("  Re-run with --reconfigure to repair the KDE/IBus wiring.\n")
-        return 0
-
     if up_to_date:
-        print(f"  Already at {__version__}; reconfiguring at your request.\n")
+        print(f"  Already at {__version__} — nothing to install.")
+        try:
+            choice = input(
+                "  Re-run configuration to repair the KDE/IBus wiring? [y/N]: "
+            ).strip().lower()
+        except EOFError:
+            choice = ""
+        if choice not in ("y", "yes"):
+            print("\n  Nothing was changed.\n")
+            return 0
+        print()
     elif not _prompt_update(installed):
         print("\n  Cancelled — nothing was changed.\n")
         return 0
+
+    install_log(
+        f"install started: {installed or 'none'} -> {__version__}"
+        f" ({'packaged' if packaged else 'source'}"
+        f"{', reconfigure' if up_to_date else ''})"
+    )
 
     # Reconfiguring at the same version has nothing to rebuild: the installed
     # package already contains this tree's code, and a rebuild is the single
@@ -1026,7 +1535,7 @@ def main(argv: list[str] | None = None) -> int:
     # hardcoded to the source-install total, so a packaged run counted up to
     # 8/11 and stopped.
     global _TOTAL_STEPS  # noqa: PLW0603
-    _TOTAL_STEPS = (9 if rebuild else 8) if packaged else 11
+    _TOTAL_STEPS = (10 if rebuild else 9) if packaged else 12
 
     gpu = _prompt_backend()
     if gpu:
@@ -1053,8 +1562,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # Before the checklist, so the pacman transaction and its password prompt
     # happen in the open rather than inside a step whose output is suppressed.
+    build_deps: list[str] = []
     if rebuild:
-        ensure_build_dependencies()
+        build_deps = ensure_build_dependencies()
 
     pkg = ctx.script_dir / "packaging"
 
@@ -1064,6 +1574,9 @@ def main(argv: list[str] | None = None) -> int:
         # quiet like the rest, so there is nothing else to watch.
         step("Rebuilding system package (several minutes)")
         rebuild_and_install_package(ctx)
+        # The pacman -U at the end of the rebuild just refreshed the sudo
+        # timestamp, so this removal cannot re-prompt for a password.
+        remove_build_dependencies(build_deps)
         step_done(f"{PACKAGE_NAME} {__version__}")
 
     if not packaged:
@@ -1142,15 +1655,37 @@ def main(argv: list[str] | None = None) -> int:
 
     step("Activating KDictate input method")
     for _ in range(5):
-        if run_command(["ibus", "engine", DBUS_INTERFACE], quiet=True, check=False).returncode == 0:
-            break
+        try:
+            activated = run_command(
+                ["ibus", "engine", DBUS_INTERFACE],
+                quiet=True, check=False, timeout=10,
+            )
+        except subprocess.TimeoutExpired:
+            install_log("ibus engine activation timed out; retrying")
+        else:
+            if activated.returncode == 0:
+                break
         time.sleep(1)
     step_done()
 
+    step("Verifying input-method stack")
+    problems = check_im_stack()
+    step_done("healthy" if not problems else f"{len(problems)} issue(s)")
+    install_log(
+        "self-check: " + ("healthy" if not problems else "; ".join(problems))
+    )
+
     verb = "configured" if packaged else "installed"
     mode = "GPU (Vulkan)" if gpu else "CPU (faster-whisper)"
-    print(f"\n  \U0001f389 KDictate {__version__} {verb} ({mode})")
-    print("     Ctrl+Space to toggle dictation.\n")
+    if problems:
+        print(f"\n  ⚠️  KDictate {__version__} {verb} ({mode}), but the "
+              "input-method stack has problems:\n")
+        for problem in problems:
+            print(f"     - {problem}")
+        print(f"\n     Details: {INSTALL_LOG_PATH}\n")
+    else:
+        print(f"\n  \U0001f389 KDictate {__version__} {verb} ({mode})")
+        print("     Ctrl+Space to toggle dictation.\n")
     return 0
 
 
