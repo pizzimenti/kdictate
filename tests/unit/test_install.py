@@ -455,11 +455,63 @@ class RepairWaylandImBridgeTests(unittest.TestCase):
         self.assertFalse(any(argv[0] == "pkill" for argv in commands))
         self.assertIn("not reachable", self._logged())
 
-    def test_flip_sequence_and_success(self) -> None:
+    def test_probe_reconfigure_healing_the_stack_skips_the_flip(self) -> None:
+        """First-install race: the probe reconfigure may itself launch the bridge.
+
+        configure_kwin_input_method has just written InputMethod, so KWin's
+        first sight of it is our reachability probe — which can spawn the
+        stack. Killing that just-healthy daemon would stake a working session
+        on the flip succeeding.
+        """
+
         run = self.enterContext(
             mock.patch.object(install, "run_command", return_value=_completed()))
         with mock.patch.object(install, "_ibus_daemon_pids", return_value=["300"]), \
              mock.patch.object(install, "_wayland_bridge_pids", return_value=["400"]):
+            install.repair_wayland_im_bridge(self.ctx)
+
+        commands = [list(call.args[0]) for call in run.call_args_list]
+        self.assertFalse(any(argv[0] == "pkill" for argv in commands))
+        self.assertFalse(any(argv[0] == "kwriteconfig6" for argv in commands))
+        self.assertIn("became healthy", self._logged())
+
+    def test_interrupt_between_delete_and_restore_still_restores(self) -> None:
+        """A Ctrl+C mid-flip must not leave kwinrc without an InputMethod key.
+
+        Without the key, KWin never launches a bridge again — even at the
+        next login — and the promised relogin recovery is gone.
+        """
+
+        run = self.enterContext(
+            mock.patch.object(install, "run_command", return_value=_completed()))
+        # sleep #1 is the post-probe recheck; sleep #2 sits between the
+        # kwinrc delete and the restore — interrupt there.
+        sleeps = iter([None, KeyboardInterrupt()])
+
+        def _sleep(_seconds: float) -> None:
+            outcome = next(sleeps, None)
+            if isinstance(outcome, BaseException):
+                raise outcome
+
+        with mock.patch.object(install.time, "sleep", side_effect=_sleep), \
+             mock.patch.object(install, "_ibus_daemon_pids", return_value=[]), \
+             mock.patch.object(install, "_wayland_bridge_pids", return_value=[]), \
+             self.assertRaises(KeyboardInterrupt):
+            install.repair_wayland_im_bridge(self.ctx)
+
+        commands = [list(map(str, call.args[0])) for call in run.call_args_list]
+        restores = [argv for argv in commands
+                    if argv[0] == "kwriteconfig6"
+                    and str(install.KDE_VIRTUAL_KEYBOARD_DESKTOP) in argv]
+        self.assertEqual(len(restores), 1)
+
+    def test_flip_sequence_and_success(self) -> None:
+        run = self.enterContext(
+            mock.patch.object(install, "run_command", return_value=_completed()))
+        # Recheck after the probe still sees no bridge; the post-flip poll does.
+        with mock.patch.object(install, "_ibus_daemon_pids", return_value=["300"]), \
+             mock.patch.object(install, "_wayland_bridge_pids",
+                               side_effect=[[], ["400"]]):
             install.repair_wayland_im_bridge(self.ctx)
 
         commands = [list(map(str, call.args[0])) for call in run.call_args_list]
@@ -490,6 +542,42 @@ class RepairWaylandImBridgeTests(unittest.TestCase):
         self.assertIn("FAILED", self._logged())
 
 
+class SessionScopingTests(unittest.TestCase):
+    """UID-wide pgrep must not mix up concurrent graphical sessions."""
+
+    def _filter(
+        self, pids: list[str], environs: dict[str, bytes],
+        display: str | None = "wayland-0",
+    ) -> list[str]:
+        env = {"WAYLAND_DISPLAY": display} if display else {}
+
+        def fake_path(spec: str) -> mock.Mock:
+            proc = mock.Mock()
+            data = environs.get(spec)
+            if data is None:
+                proc.read_bytes.side_effect = OSError("gone")
+            else:
+                proc.read_bytes.return_value = data
+            return proc
+
+        with mock.patch.dict(install.os.environ, env, clear=True), \
+             mock.patch.object(install, "Path", side_effect=fake_path):
+            return install._pids_in_current_session(pids)
+
+    def test_without_display_env_everything_is_kept(self) -> None:
+        self.assertEqual(self._filter(["1", "2"], {}, display=None), ["1", "2"])
+
+    def test_only_this_sessions_processes_survive(self) -> None:
+        environs = {
+            "/proc/1/environ": b"WAYLAND_DISPLAY=wayland-0\0HOME=/home/x\0",
+            "/proc/2/environ": b"WAYLAND_DISPLAY=wayland-1\0HOME=/home/x\0",
+            "/proc/3/environ": b"HOME=/home/x\0",  # no display var: keep
+            # /proc/4 vanished between pgrep and the read: drop
+        }
+        self.assertEqual(
+            self._filter(["1", "2", "3", "4"], environs), ["1", "3"])
+
+
 class CheckImStackTests(unittest.TestCase):
     """The self-check must catch a green-checklist install over a dead stack."""
 
@@ -498,7 +586,10 @@ class CheckImStackTests(unittest.TestCase):
         daemons: list[str], kwin: bool, bridge: list[str], engines: list[str],
         active_engine: str = DBUS_INTERFACE, name_has_owner: str = "(true,)",
     ) -> list[str]:
-        def fake_run(command, **kwargs):
+        def fake_run(
+            command: list[str | Path], **kwargs: object,
+        ) -> subprocess.CompletedProcess[str]:
+            del kwargs
             argv = [str(part) for part in command]
             if argv[:2] == ["ibus", "engine"]:
                 return _completed(stdout=f"{active_engine}\n")

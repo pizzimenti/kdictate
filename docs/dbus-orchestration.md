@@ -75,7 +75,8 @@ IBUS_COMPONENT_PATH="$HOME/.local/share/ibus/component:/usr/share/ibus/component
 # 4. Restart from KWin down (this relaunches ibus-ui-gtk3 → ibus-daemon → engine).
 #    NOTE: the old org.kde.kwin.VirtualKeyboard.enabled toggle is gone as of
 #    Plasma 6.7; the supported relaunch is a kwinrc InputMethod flip — KWin
-#    acts on the *changed* value at each reconfigure.
+#    acts on the *changed* value at each reconfigure.  (Substitute `qdbus`
+#    wherever `qdbus6` is not shipped.)
 kwriteconfig6 --file ~/.config/kwinrc --group Wayland --key InputMethod --delete
 qdbus6 org.kde.KWin /KWin reconfigure
 sleep 1

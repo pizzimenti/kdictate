@@ -123,7 +123,20 @@ def die(message: str) -> NoReturn:
 # Persistent install log
 # -------------------------------------------------------------------
 
-INSTALL_LOG_PATH = Path.home() / ".local" / "state" / "kdictate" / "install.log"
+def _state_log_dir() -> Path:
+    """Mirror kdictate.logging_utils._resolve_log_dir (without the mkdir).
+
+    Kept in sync by hand rather than imported: the runtime helper creates
+    the directory as a side effect, which an import-time constant must not.
+    """
+
+    state_home = os.environ.get("XDG_STATE_HOME")
+    if state_home:
+        return Path(state_home) / "kdictate"
+    return Path.home() / ".local" / "state" / "kdictate"
+
+
+INSTALL_LOG_PATH = _state_log_dir() / "install.log"
 
 
 def install_log(message: str) -> None:
@@ -142,7 +155,7 @@ def install_log(message: str) -> None:
 
     try:
         INSTALL_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        stamp = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
         with INSTALL_LOG_PATH.open("a", encoding="utf-8") as fh:
             fh.write(f"{stamp} {message}\n")
     except OSError:
@@ -625,12 +638,47 @@ def _pgrep_pids(pattern: str, *, exact_name: bool = False) -> list[str]:
     return [tok for tok in result.stdout.split() if tok.isdigit()]
 
 
+def _pids_in_current_session(pids: list[str]) -> list[str]:
+    """Drop PIDs that belong to a different graphical session.
+
+    One account can run several concurrent graphical sessions, and a
+    UID-wide pgrep sees all of them: session A's healthy bridge must not
+    make a bridge-less session B skip its repair (or vice versa). IBus
+    keys its per-session state by display name, so a process whose
+    WAYLAND_DISPLAY/DISPLAY differs from ours is another session's.
+    Processes with no display variable at all are kept — erring toward
+    the pre-scoping behaviour rather than ignoring a daemon we cannot
+    classify.
+    """
+
+    display = os.environ.get("WAYLAND_DISPLAY") or os.environ.get("DISPLAY")
+    if not display:
+        return pids
+
+    ours = {
+        f"WAYLAND_DISPLAY={display}".encode(),
+        f"DISPLAY={display}".encode(),
+    }
+    kept: list[str] = []
+    for pid in pids:
+        try:
+            entries = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        except OSError:
+            continue  # process exited between pgrep and now
+        has_display = any(
+            entry.startswith((b"WAYLAND_DISPLAY=", b"DISPLAY=")) for entry in entries
+        )
+        if not has_display or ours.intersection(entries):
+            kept.append(pid)
+    return kept
+
+
 def _wayland_bridge_pids() -> list[str]:
-    return _pgrep_pids(_WAYLAND_BRIDGE_PATTERN)
+    return _pids_in_current_session(_pgrep_pids(_WAYLAND_BRIDGE_PATTERN))
 
 
 def _ibus_daemon_pids() -> list[str]:
-    return _pgrep_pids("ibus-daemon", exact_name=True)
+    return _pids_in_current_session(_pgrep_pids("ibus-daemon", exact_name=True))
 
 
 def _kwin_wayland_running() -> bool:
@@ -734,12 +782,28 @@ def repair_wayland_im_bridge(ctx: InstallContext) -> None:
         return
 
     # KWin must be reachable on the session bus for any of this to work.
-    probe = run_command(
-        [qdbus_bin, "org.kde.KWin", "/KWin", "reconfigure"],
-        quiet=True, check=False,
-    )
+    # Bounded: a wedged KWin would otherwise hang the quiet install step
+    # until the D-Bus default timeout with no visible progress.
+    try:
+        probe = run_command(
+            [qdbus_bin, "org.kde.KWin", "/KWin", "reconfigure"],
+            quiet=True, check=False, timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        install_log("bridge repair skipped: KWin did not answer within 10s")
+        return
     if probe.returncode != 0:
         install_log("bridge repair skipped: KWin not reachable on the session bus")
+        return
+
+    # On a first install, configure_kwin_input_method has just written the
+    # InputMethod key and the probe reconfigure above is the first time KWin
+    # sees it — which can launch the bridge right now. Re-check before
+    # treating the daemon as bridgeless, or we would kill a stack that just
+    # became healthy and stake it on the flip below succeeding.
+    time.sleep(1.0)
+    if _wayland_bridge_pids() and _ibus_daemon_pids():
+        install_log("IM stack became healthy after reconfigure; repair not needed")
         return
 
     # A bare ibus-daemon (the broken-session shape this repairs) would
@@ -755,20 +819,40 @@ def repair_wayland_im_bridge(ctx: InstallContext) -> None:
         time.sleep(0.5)
 
     kwinrc = ctx.home / ".config" / "kwinrc"
-    run_command([
-        "kwriteconfig6", "--file", kwinrc,
-        "--group", "Wayland", "--key", "InputMethod", "--delete",
-    ], quiet=True, check=False)
-    run_command([qdbus_bin, "org.kde.KWin", "/KWin", "reconfigure"],
-                quiet=True, check=False)
-    time.sleep(1.0)
-    run_command([
-        "kwriteconfig6", "--file", kwinrc,
-        "--group", "Wayland", "--key", "InputMethod",
-        KDE_VIRTUAL_KEYBOARD_DESKTOP,
-    ], quiet=True, check=False)
-    run_command([qdbus_bin, "org.kde.KWin", "/KWin", "reconfigure"],
-                quiet=True, check=False)
+
+    def _restore_input_method() -> None:
+        restored = run_command([
+            "kwriteconfig6", "--file", kwinrc,
+            "--group", "Wayland", "--key", "InputMethod",
+            KDE_VIRTUAL_KEYBOARD_DESKTOP,
+        ], quiet=True, check=False)
+        if restored.returncode != 0:
+            install_log(
+                "bridge repair CRITICAL: could not restore [Wayland] InputMethod "
+                f"in {kwinrc}; set it to {KDE_VIRTUAL_KEYBOARD_DESKTOP} manually"
+            )
+
+    # The delete/restore pair must not be separable: a Ctrl+C or crash
+    # between them would leave kwinrc without an InputMethod key, and then
+    # even the next-login recovery is gone — KWin would never launch a
+    # bridge again until the key is put back by hand.
+    def _reconfigure_kwin() -> None:
+        try:
+            run_command([qdbus_bin, "org.kde.KWin", "/KWin", "reconfigure"],
+                        quiet=True, check=False, timeout=10)
+        except subprocess.TimeoutExpired:
+            install_log("bridge repair: KWin reconfigure timed out (continuing)")
+
+    try:
+        run_command([
+            "kwriteconfig6", "--file", kwinrc,
+            "--group", "Wayland", "--key", "InputMethod", "--delete",
+        ], quiet=True, check=False)
+        _reconfigure_kwin()
+        time.sleep(1.0)
+    finally:
+        _restore_input_method()
+    _reconfigure_kwin()
 
     # KWin spawns the bridge asynchronously; give it a bounded window.
     for _ in range(20):

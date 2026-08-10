@@ -90,6 +90,9 @@ therefore the supported no-logout way to a fresh
 Virtual Keyboard KCM uses when the user switches input methods:
 
 ```sh
+# (Substitute `qdbus` wherever `qdbus6` is not shipped — install.py probes
+#  for qdbus6 first, then qdbus.)
+
 # 0. Only when the bridge is already missing!  A healthy session must never
 #    have its ibus-daemon killed — engines respawn on demand, so upgrades
 #    need only `ibus write-cache` + killing kdictate engine processes.
