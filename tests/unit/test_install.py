@@ -728,7 +728,9 @@ class QuietFailureTests(unittest.TestCase):
         with mock.patch.object(install, "run_command", return_value=failed):
             self.assertEqual(
                 install._require_build_dependencies(),
-                ["python-build", "python-installer"],
+                # Mirrors the PKGBUILD's Python makedepends, python-wheel
+                # included.
+                ["python-build", "python-installer", "python-wheel"],
             )
 
     def test_present_build_dependencies_report_nothing_missing(self) -> None:
@@ -745,28 +747,29 @@ class EnsureBuildDependenciesTests(unittest.TestCase):
             install, "_require_build_dependencies", side_effect=[missing, []]))
         self.enterContext(mock.patch.object(install, "_detect_distro", return_value="arch"))
         self.enterContext(mock.patch.object(install.shutil, "which", return_value="/usr/bin/sudo"))
+        self.enterContext(mock.patch.object(install, "install_log"))
 
     def test_accepting_installs_the_packages_as_dependencies(self) -> None:
-        """Build tooling is installed --asdeps, because that is what it is.
+        """Build tooling is installed --asdeps and reported for later removal.
 
-        Marking it explicit would stop an orphan sweep ever reclaiming it,
-        which is the installer overriding the machine's cleanup policy to
-        spare itself a round trip. Whether build tooling stays installed is
-        the user's call; all this has to guarantee is that a sweep never
-        leaves the next rebuild dead-ended, which re-installing on demand
-        already does.
+        --asdeps because that is what it is — tooling the build needs, not
+        something the user asked for — and because it is what lets the
+        post-build ``pacman -Rns`` (the makepkg --rmdeps half) reclaim it
+        cleanly. The return value is the removal list: exactly what this run
+        installed, never what was already on the machine.
         """
 
         self._patch_env(["python-build", "python-installer"])
         ok = subprocess.CompletedProcess(args=["pacman"], returncode=0, stdout="", stderr="")
         with mock.patch("builtins.input", return_value=""):
             with mock.patch.object(install, "run_command", return_value=ok) as run:
-                install.ensure_build_dependencies()
+                installed = install.ensure_build_dependencies()
 
         argv = run.call_args.args[0]
         self.assertEqual(argv[:5], ["sudo", "pacman", "-S", "--needed", "--asdeps"])
         self.assertIn("python-build", argv)
         self.assertIn("python-installer", argv)
+        self.assertEqual(installed, ["python-build", "python-installer"])
 
     def test_declining_stops_with_the_manual_command(self) -> None:
         self._patch_env(["python-installer"])
@@ -779,4 +782,34 @@ class EnsureBuildDependenciesTests(unittest.TestCase):
     def test_nothing_missing_prompts_for_nothing(self) -> None:
         with mock.patch.object(install, "_require_build_dependencies", return_value=[]):
             with mock.patch("builtins.input", side_effect=AssertionError("prompted")):
-                install.ensure_build_dependencies()
+                self.assertEqual(install.ensure_build_dependencies(), [])
+
+
+class RemoveBuildDependenciesTests(unittest.TestCase):
+    """The makepkg --rmdeps half: the build host is left as it was found."""
+
+    def setUp(self) -> None:
+        self.install_log = self.enterContext(mock.patch.object(install, "install_log"))
+
+    def test_nothing_installed_means_nothing_removed(self) -> None:
+        with mock.patch.object(install, "run_command") as run:
+            install.remove_build_dependencies([])
+        run.assert_not_called()
+
+    def test_removes_exactly_what_this_run_installed(self) -> None:
+        ok = subprocess.CompletedProcess(args=["pacman"], returncode=0, stdout="", stderr="")
+        with mock.patch.object(install, "run_command", return_value=ok) as run:
+            install.remove_build_dependencies(["python-build", "python-wheel"])
+
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:4], ["sudo", "pacman", "-Rns", "--noconfirm"])
+        self.assertEqual(argv[4:], ["python-build", "python-wheel"])
+
+    def test_failed_removal_is_logged_but_never_fatal(self) -> None:
+        refused = subprocess.CompletedProcess(
+            args=["pacman"], returncode=1, stdout="",
+            stderr="error: failed to prepare transaction")
+        with mock.patch.object(install, "run_command", return_value=refused):
+            install.remove_build_dependencies(["python-build"])
+        logged = " | ".join(str(call.args[0]) for call in self.install_log.call_args_list)
+        self.assertIn("could not remove", logged)

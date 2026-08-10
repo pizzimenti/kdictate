@@ -1053,9 +1053,16 @@ def _require_build_dependencies() -> list[str]:
     # present when pacman has never heard of it -- the user installs only what
     # was reported, re-runs, and makepkg dies at `python -m build` anyway.
     # -I closes both (it implies -P, -E and -s).
+    # Mirrors the PKGBUILD's Python makedepends exactly — python-wheel
+    # included, so a missing wheel backend is caught here instead of by
+    # makepkg minutes into the build.
     missing = [
         package
-        for module, package in (("build", "python-build"), ("installer", "python-installer"))
+        for module, package in (
+            ("build", "python-build"),
+            ("installer", "python-installer"),
+            ("wheel", "python-wheel"),
+        )
         if run_command(
             [sys.executable, "-I", "-c", f"import {module}"],
             quiet=True, check=False, cwd=Path.home(),
@@ -1064,36 +1071,35 @@ def _require_build_dependencies() -> list[str]:
     return missing
 
 
-def ensure_build_dependencies() -> None:
+def ensure_build_dependencies() -> list[str]:
     """Install the rebuild's build dependencies, with consent.
 
-    Called during preflight rather than from inside the rebuild step, so the
-    pacman transaction and its password prompt happen in the open, before the
-    quiet one-screen checklist starts — not buried inside a step whose output
-    is suppressed. That was why ``makepkg --syncdeps`` was dropped; refusing
-    to install them at all was an overcorrection that left the user to run a
-    command and start over.
+    Returns the packages installed *by this run* — the caller hands them to
+    :func:`remove_build_dependencies` after a successful build, completing
+    the ``makepkg --syncdeps --rmdeps`` emulation: build deps land only for
+    the duration of the build, and the host is left as it was found. (The
+    syncdeps half is hand-rolled here rather than delegated to ``makepkg -s``
+    so the pacman transaction and its password prompt happen in the open,
+    before the quiet one-screen checklist starts.)
 
     Installed with ``--asdeps``, because that is what they are: tooling this
-    build needs, not something the user asked to have on their system.
-    Marking them explicit would keep an orphan sweep from ever reclaiming
-    them, which is the installer overriding the machine's cleanup policy to
-    protect itself from a round trip. Whether build tooling stays installed
-    is the user's call — ``makepkg --rmdeps`` and ``yay --removemake`` exist
-    precisely so it can be — and this only has to guarantee that a sweep
-    never leaves the next rebuild dead-ended, which re-installing on demand
-    already does.
+    build needs, not something the user asked to have on their system — and
+    it is also what makes the post-build ``-Rns`` clean removal work.
+    Packages that were *already present* before this run are never touched:
+    they belong to the machine, not to this build.
     """
 
     missing = _require_build_dependencies()
     if not missing:
-        return
+        return []
 
     distro = _detect_distro()
     hint = _pkg_hint(distro, " ".join(missing))
     print("  The package rebuild needs these build dependencies:\n")
     for package in missing:
         print(f"      {package}")
+    print("\n  They are only needed during the build and will be removed"
+          "\n  again once it succeeds (makepkg --rmdeps behaviour).")
     print()
 
     if distro != "arch" or shutil.which("sudo") is None:
@@ -1119,6 +1125,38 @@ def ensure_build_dependencies() -> None:
         die(
             "These are still not importable after installing:\n\n"
             + "".join(f"        {package}\n" for package in still_missing)
+        )
+
+    install_log(f"installed build dependencies for this run: {', '.join(missing)}")
+    return missing
+
+
+def remove_build_dependencies(packages: list[str]) -> None:
+    """Remove build deps this run installed — the ``makepkg --rmdeps`` half.
+
+    Only ever called with :func:`ensure_build_dependencies`'s return value,
+    so anything already on the machine before this run is out of reach by
+    construction. ``-Rns`` also reclaims their own now-unneeded dependency
+    trees, matching what an orphan sweep would eventually have done.
+
+    Best-effort: if pacman refuses (something started depending on one of
+    them mid-build, say), the packages just stay behind as ``--asdeps``
+    orphans — exactly the pre-cleanup status quo — and the install log says
+    so. A failed cleanup must never fail an otherwise-successful install.
+    """
+
+    if not packages:
+        return
+    result = run_command(
+        ["sudo", "pacman", "-Rns", "--noconfirm", *packages],
+        quiet=True, check=False,
+    )
+    if result.returncode == 0:
+        install_log(f"removed build dependencies: {', '.join(packages)}")
+    else:
+        install_log(
+            f"could not remove build dependencies ({', '.join(packages)}); "
+            "left installed as --asdeps: " + result.stderr.strip()
         )
 
 
@@ -1339,8 +1377,9 @@ def main(argv: list[str] | None = None) -> int:
 
     # Before the checklist, so the pacman transaction and its password prompt
     # happen in the open rather than inside a step whose output is suppressed.
+    build_deps: list[str] = []
     if rebuild:
-        ensure_build_dependencies()
+        build_deps = ensure_build_dependencies()
 
     pkg = ctx.script_dir / "packaging"
 
@@ -1350,6 +1389,9 @@ def main(argv: list[str] | None = None) -> int:
         # quiet like the rest, so there is nothing else to watch.
         step("Rebuilding system package (several minutes)")
         rebuild_and_install_package(ctx)
+        # The pacman -U at the end of the rebuild just refreshed the sudo
+        # timestamp, so this removal cannot re-prompt for a password.
+        remove_build_dependencies(build_deps)
         step_done(f"{PACKAGE_NAME} {__version__}")
 
     if not packaged:

@@ -42,6 +42,14 @@ typing, which is why every version "worked after reboot."
   daemon bus name, engine process, active engine, ibus-daemon, Wayland IM
   bridge — and reports specific problems instead of printing an unconditional
   success banner over a severed stack.
+- **Build dependencies are removed after a successful rebuild** (the
+  `makepkg --rmdeps` half, completing the hand-rolled `--syncdeps` from
+  0.14.1). Only packages this run installed are removed — anything already
+  on the machine is out of reach by construction — so rebuilds no longer
+  leave `python-build`/`python-installer`/`python-wheel` behind as orphans.
+  The consent prompt announces the removal up front; a refused removal is
+  logged and never fails the install. The preflight probe now also checks
+  `python-wheel`, aligning it with the PKGBUILD's makedepends.
 - **Engine log identity.** Each engine instance logs under a numbered logger
   (`…engine1`, `…engine2`), the process logs its PID at startup, and commits
   log the enabled/focused/daemon-state gate they passed — so "committed but
