@@ -83,38 +83,55 @@ sequence is run at the end of install.
 
 ### Working relaunch sequence (used by install.py ≥0.17.0)
 
-KWin (re)launches the command named by kwinrc `[Wayland] InputMethod` on
-`reconfigure` whenever the *value changes*.  Flipping the key off and back on is
-therefore the supported no-logout way to a fresh
-`ibus-ui-gtk3 --enable-wayland-im --exec-daemon` stack — the same mechanism the
-Virtual Keyboard KCM uses when the user switches input methods:
+Traced in KWin 6.7.4 source (`main_wayland.cpp` `refreshSettings`,
+`inputmethod.cpp` `setInputMethodCommand`, `workspace.cpp`
+`slotReconfigure`): KWin watches kwinrc with a **KConfigWatcher**, which only
+fires on **notified** config writes (`kwriteconfig6 --notify`, the same
+KConfig::Notify mechanism the Virtual Keyboard KCM uses). A notified change
+to `[Wayland] InputMethod` stops the old IM process, creates a fresh private
+Wayland connection, exports its FD as `WAYLAND_SOCKET`, and launches the
+desktop file's Exec.
+
+Three facts that make or break the sequence:
+
+- **A plain (non-notified) `kwriteconfig6` write does nothing until next
+  login.** The file changes; KConfigWatcher never fires. This exact silence
+  was the failed first attempt at a live repair.
+- **`qdbus6 org.kde.KWin /KWin reconfigure` is not part of this path.**
+  `Workspace::slotReconfigure()` never touches the input method.
+- **Writing the same value is a no-op** — KWin early-returns when the new
+  Exec equals its current command — so restarting a dead IM with an
+  unchanged config requires the notified delete → notified restore pair.
 
 ```sh
-# (Substitute `qdbus` wherever `qdbus6` is not shipped — install.py probes
-#  for qdbus6 first, then qdbus.)
-
 # 0. Only when the bridge is already missing!  A healthy session must never
 #    have its ibus-daemon killed — engines respawn on demand, so upgrades
 #    need only `ibus write-cache` + killing kdictate engine processes.
 
-# 1. Clear the bridgeless daemon so the relaunched bridge's --exec-daemon
-#    child does not collide with it.
+# 1. Notified delete: KWin clears its input-method command.
+kwriteconfig6 --notify --file ~/.config/kwinrc \
+    --group Wayland --key InputMethod --delete
+sleep 1
+
+# 2. Clear the bridgeless daemon so the relaunched bridge's --exec-daemon
+#    child does not collide with it (only PIDs proven to be this session's).
 pkill -x ibus-daemon
 sleep 0.5
 
-# 2. Flip the InputMethod entry off and back on; each reconfigure makes KWin
-#    act on the changed value, and the restore relaunches the full stack.
-kwriteconfig6 --file ~/.config/kwinrc --group Wayland --key InputMethod --delete
-qdbus6 org.kde.KWin /KWin reconfigure
-sleep 1
-kwriteconfig6 --file ~/.config/kwinrc --group Wayland --key InputMethod \
+# 3. Notified restore: the changed value makes KWin launch the full stack.
+kwriteconfig6 --notify --file ~/.config/kwinrc \
+    --group Wayland --key InputMethod \
     /usr/share/applications/org.freedesktop.IBus.Panel.Wayland.Gtk3.desktop
-qdbus6 org.kde.KWin /KWin reconfigure
 
-# 3. Verify: an `ibus-ui-gtk3 --enable-wayland-im` process must appear.
+# 4. Verify: bridge AND its ibus-daemon child must both appear.
 pgrep -af 'ibus-ui-gtk3.*--enable-wayland-im'
+pgrep -x ibus-daemon
 ```
 
-If neither `qdbus6` nor `qdbus` is available on the host, there is no
-in-session recovery: the new `InputMethod` setting takes effect at the next
-login when KWin re-reads kwinrc during startup.
+Notes: `/VirtualKeyboard`'s D-Bus surface (`mode`, `active`, `visible`,
+`available`, `forceActivate()`) contains **no** method that relaunches the IM
+process, and `available=true` only means the command string is nonempty — it
+does not prove the process is alive. `VirtualKeyboardEnabled`/`Mode` gate
+whether KWin treats the IM as enabled, not whether the process is spawned.
+If `kwriteconfig6` is unavailable there is no in-session recovery: the
+setting takes effect at the next login.

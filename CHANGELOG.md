@@ -1,10 +1,29 @@
 # Changelog
 
-## 0.17.0
+## 0.18.0
 
 Root-causes and fixes the "every install breaks dictation until reboot"
 pattern that ran through 0.14–0.16, and adds the observability that would
 have made it a one-round diagnosis.
+
+(0.17.0 was abandoned unreleased: its live-repair used the wrong KWin
+trigger — a plain kwinrc write plus `/KWin reconfigure`, neither of which
+reaches KWin's input-method code — and a cross-model source review of KWin
+6.7.4 found two release blockers before any tag was cut. Everything below
+is the corrected line of work; pre-release 0.17.0 builds existed only on
+the development machine during live diagnosis.)
+
+### The KWin mechanism, as actually traced in source
+
+KWin watches kwinrc via **KConfigWatcher**, which fires only on *notified*
+writes (`kwriteconfig6 --notify` — the KConfig::Notify mechanism the
+Virtual Keyboard KCM uses). A notified `[Wayland] InputMethod` change calls
+`refreshSettings()` → `InputMethod::setInputMethodCommand()`: KWin stops
+the old process, creates a private Wayland connection, exports its FD as
+`WAYLAND_SOCKET`, and launches the desktop file's Exec. `/KWin reconfigure`
+never touches this path; writing an unchanged value is a no-op; and
+`/VirtualKeyboard` exposes no relaunch method (`available=true` merely
+means the command string is nonempty, not that the process is alive).
 
 ### The root cause
 
@@ -28,10 +47,24 @@ typing, which is why every version "worked after reboot."
   defunct property toggle are gone.
 - **Missing-bridge repair via KWin.** When the Wayland IM bridge is already
   absent (the broken-session shape older installers left behind), the
-  installer now relaunches the stack the supported way: flip the kwinrc
-  `[Wayland] InputMethod` entry and ask KWin to reconfigure — the same
-  mechanism the Virtual Keyboard KCM uses — then verify the bridge process
-  actually appeared.
+  installer relaunches the stack through the traced mechanism: a *notified*
+  delete of kwinrc `[Wayland] InputMethod` followed by a *notified* restore
+  (`kwriteconfig6 --notify`, with the restore guaranteed in a `finally`),
+  then verifies that the bridge **and** its `--exec-daemon` child both
+  appeared. Only daemons positively attributed to the current session are
+  cleared beforehand — unattributable processes are logged and left alone.
+- **Fail-closed dependency-cleanup snapshots.** The build-dep removal list
+  is the `pacman -Qq` diff around the install transaction; if *either*
+  snapshot is unavailable the cleanup claims nothing (a failed
+  before-snapshot with a successful after-snapshot would otherwise
+  classify the entire system as newly installed).
+- **`VirtualKeyboardMode` respected.** Plasma 6.7 reads the legacy
+  `VirtualKeyboardEnabled` bool only when the newer mode key is absent; a
+  user-set mode is now recorded and left alone instead of fought over.
+- **Preflight mirrors the PKGBUILD's full makedepends** — cmake, shaderc
+  (glslc), vulkan-headers, and the five Python build packages — so a clean
+  machine hears about everything up front instead of dying minutes into
+  the suppressed build.
 
 ### Added
 
