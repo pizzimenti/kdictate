@@ -26,7 +26,6 @@ class DictationConfig:
     compute_type: str
     block_ms: int
     energy_threshold: float
-    noise_floor_margin: float
     silence_ms: int
     min_speech_ms: int
     start_speech_ms: int
@@ -56,7 +55,6 @@ class DictationConfig:
             compute_type=namespace.compute_type,
             block_ms=namespace.block_ms,
             energy_threshold=namespace.energy_threshold,
-            noise_floor_margin=namespace.noise_floor_margin,
             silence_ms=namespace.silence_ms,
             min_speech_ms=namespace.min_speech_ms,
             start_speech_ms=namespace.start_speech_ms,
@@ -141,24 +139,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         "--energy-threshold",
         type=float,
         default=defaults["energy_threshold"],
-        help="Absolute RMS floor for speech detection, and the lower bound of "
-             "the adaptive gate (see --noise-floor-margin). Lower it (e.g. "
-             "500) for weak/quiet microphones whose speech never crosses the "
-             "default; it also scales the gate's ceiling, so lowering it "
-             "tightens the whole range rather than only the bottom.",
-    )
-    parser.add_argument(
-        "--noise-floor-margin",
-        type=float,
-        default=defaults["noise_floor_margin"],
-        help="How far above the measured ambient noise floor a block must sit "
-             "to count as speech. Defaults to 0 — the adaptive gate is OFF and "
-             "--energy-threshold is used alone. Set it (try 1.6) to opt in: "
-             "the gate becomes max(--energy-threshold, noise_floor * margin), "
-             "capped at 8x --energy-threshold. Tune against the 'recording "
-             "ended:' log line, which reports the measured noise_floor and the "
-             "rms range whether or not the gate is enabled: the margin only "
-             "helps if noise_floor sits well below your speaking level.",
+        help="RMS threshold for speech detection. Lower it (e.g. 500) for "
+             "weak/quiet microphones that don't cross the default; raise it "
+             "for noisy environments with false triggers.",
     )
     parser.add_argument(
         "--silence-ms",

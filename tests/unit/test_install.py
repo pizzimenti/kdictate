@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 import subprocess
 import unittest
 from pathlib import Path
@@ -147,6 +148,199 @@ class InstalledVersionTests(unittest.TestCase):
             install._installed_version(_ctx(Path("/nonexistent")), False)
         )
 
+    def test_source_probe_cannot_import_the_tree_it_is_installing_from(self) -> None:
+        """The probe must ask about the *installed* copy, not this checkout.
+
+        `python -c` puts the cwd on sys.path, and the documented invocation is
+        `python3 install.py` from the repo root — which contains the kdictate
+        package. Without -P the probe imported the source tree, always
+        reported its own version, and made the version gate a no-op that could
+        never detect an update.
+        """
+
+        ctx = _ctx(Path("/tmp/kdictate-runtime"))
+        completed = _completed("0.12.0\n")
+        with mock.patch.object(Path, "exists", return_value=True):
+            with mock.patch.object(
+                install, "run_command", return_value=completed
+            ) as run:
+                self.assertEqual(install._installed_version(ctx, False), "0.12.0")
+
+        argv = run.call_args.args[0]
+        # -I, not -P: -P only stops the cwd being prepended, while PYTHONPATH
+        # is still honoured, and a dev shell or IDE may well have this very
+        # checkout on it. -I implies -P, -E and -s.
+        self.assertIn("-I", argv)
+        # ...and not resolved relative to wherever the installer was invoked.
+        self.assertEqual(run.call_args.kwargs["cwd"], ctx.home)
+
+
+class BuildDependencyProbeTests(unittest.TestCase):
+    def test_probe_cannot_be_fooled_by_a_stray_build_directory(self) -> None:
+        """The probe must not import directories from the invocation cwd.
+
+        This runs from a repo root that accumulates a `build/` directory from
+        the very wheel step these dependencies exist to perform. `python -c`
+        puts the cwd on sys.path, so Python imports that directory as an
+        implicit namespace package and `import build` succeeds even when
+        python-build is not installed at all — reporting only *some* of the
+        missing packages, so the user installs those, re-runs, and makepkg
+        dies at `python -m build` anyway.
+        """
+
+        ok = subprocess.CompletedProcess(args=["python"], returncode=0, stdout="", stderr="")
+        with mock.patch.object(install, "run_command", return_value=ok) as run:
+            install._require_build_dependencies()
+
+        self.assertTrue(run.call_args_list, "probe never ran")
+        for call in run.call_args_list:
+            # -I rather than -P: -P leaves PYTHONPATH honoured, so a shell
+            # exporting this checkout would still shadow the real module.
+            self.assertIn("-I", call.args[0])
+            # The specific directory matters. Accepting any non-null cwd would
+            # pass even if the probe ran inside the checkout it must avoid.
+            self.assertEqual(call.kwargs.get("cwd"), Path.home())
+
+
+class GlobalShortcutRepairTests(unittest.TestCase):
+    """--reconfigure must be able to repair a broken Ctrl+Space binding."""
+
+    ENTRY = "_launch=Ctrl+Space, Ctrl+Space"
+
+    def _run(self, existing: str) -> str | None:
+        written: dict[str, str] = {}
+
+        def _capture(_ctx, path, content):
+            written["content"] = content
+
+        ctx = _ctx(Path("/tmp/kdictate-runtime"))
+        with mock.patch.object(Path, "exists", return_value=True):
+            with mock.patch.object(Path, "read_text", return_value=existing):
+                with mock.patch.object(install, "write_home_file", _capture):
+                    install.register_global_shortcut(ctx)
+        return written.get("content")
+
+    def test_missing_section_is_added(self) -> None:
+        result = self._run("[services][other.desktop]\n_launch=Ctrl+X\n")
+        self.assertIsNotNone(result)
+        self.assertIn(install.TOGGLE_DESKTOP_NAME, result or "")
+        self.assertIn(self.ENTRY, result or "")
+
+    def test_a_correct_binding_is_left_untouched(self) -> None:
+        existing = f"[services][{install.TOGGLE_DESKTOP_NAME}]\n{self.ENTRY}\n"
+        self.assertIsNone(self._run(existing), "rewrote a file that was already correct")
+
+    def test_a_changed_binding_is_restored(self) -> None:
+        """The case that made this unrepairable: section present, entry wrong.
+
+        Returning as soon as the section was found meant a Plasma shortcut
+        reset left the binding broken with no way to fix it.
+        """
+
+        existing = (
+            f"[services][{install.TOGGLE_DESKTOP_NAME}]\n"
+            "_launch=Ctrl+Alt+Z, Ctrl+Alt+Z\n"
+        )
+        result = self._run(existing) or ""
+        self.assertIn(self.ENTRY, result)
+        self.assertNotIn("Ctrl+Alt+Z", result)
+
+    def test_a_removed_entry_is_restored(self) -> None:
+        existing = (
+            f"[services][{install.TOGGLE_DESKTOP_NAME}]\n"
+            "_k_friendly_name=KDictate\n"
+            "\n"
+            "[services][other.desktop]\n"
+            "_launch=Ctrl+X\n"
+        )
+        result = self._run(existing) or ""
+        self.assertIn(self.ENTRY, result)
+        # Restored inside our own section, not appended to the other one.
+        ours = result.split(f"[services][{install.TOGGLE_DESKTOP_NAME}]")[1]
+        self.assertIn(self.ENTRY, ours.split("[services][other.desktop]")[0])
+        self.assertIn("_launch=Ctrl+X", result)
+
+
+class StaleEngineProcessTests(unittest.TestCase):
+    """Upgrading replaces the engine on disk; running copies keep the old code."""
+
+    def setUp(self) -> None:
+        self.enterContext(
+            mock.patch.object(install.shutil, "which", return_value="/usr/bin/pgrep"))
+
+    @staticmethod
+    def _pgrep(stdout: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=["pgrep"], returncode=0 if stdout.strip() else 1,
+            stdout=stdout, stderr="")
+
+    def test_nothing_running_signals_nothing(self) -> None:
+        with mock.patch.object(
+            install, "run_command", return_value=self._pgrep("")
+        ) as run:
+            self.assertEqual(install.clear_stale_engine_processes(), 0)
+        # Only the probe ran; no kill was issued.
+        self.assertEqual(len(run.call_args_list), 1)
+        self.assertEqual(run.call_args_list[0].args[0][0], "pgrep")
+
+    def test_running_engines_are_terminated_and_counted(self) -> None:
+        side_effect = [
+            self._pgrep("1975\n757291\n"),   # initial probe: two engines
+            self._pgrep(""),                 # pkill
+            self._pgrep(""),                 # survivor probe: none left
+        ]
+        with mock.patch.object(install, "run_command", side_effect=side_effect) as run:
+            self.assertEqual(install.clear_stale_engine_processes(), 2)
+        self.assertEqual(run.call_args_list[1].args[0][0], "pkill")
+
+    def test_survivors_are_force_killed(self) -> None:
+        side_effect = [
+            self._pgrep("1975\n"),
+            self._pgrep(""),
+            self._pgrep("1975\n"),   # ignored SIGTERM
+            self._pgrep(""),
+        ]
+        with mock.patch.object(install, "run_command", side_effect=side_effect) as run:
+            install.clear_stale_engine_processes()
+        self.assertIn("-9", run.call_args_list[-1].args[0])
+
+    def test_selection_is_scoped_to_this_user_and_an_executed_path(self) -> None:
+        """The kill must not be able to reach anything but our own engines.
+
+        Matching a bare name would also hit unrelated processes that merely
+        mention it; not scoping by uid would reach other users' engines.
+        """
+
+        with mock.patch.object(
+            install, "run_command", return_value=self._pgrep("")
+        ) as run:
+            install.clear_stale_engine_processes()
+
+        argv = run.call_args_list[0].args[0]
+        self.assertIn("-u", argv)
+        self.assertIn(str(os.getuid()), argv)
+        self.assertIn("/ibus-engine-kdictate", argv[-1])
+
+    def test_missing_pgrep_is_not_fatal(self) -> None:
+        with mock.patch.object(install.shutil, "which", return_value=None):
+            with mock.patch.object(install, "run_command") as run:
+                self.assertEqual(install.clear_stale_engine_processes(), 0)
+        run.assert_not_called()
+
+
+class InstallerArgumentTests(unittest.TestCase):
+    def test_reconfigure_flag_exists_and_defaults_off(self) -> None:
+        """Repairing an install at the current version must be possible.
+
+        Every configuration step is idempotent and re-running them is the
+        documented repair path. The version gate skips all of them when the
+        versions match, so without an override a user whose install broke *at
+        the current version* could only fix it by editing app_metadata.py.
+        """
+
+        self.assertFalse(install.parse_args([]).reconfigure)
+        self.assertTrue(install.parse_args(["--reconfigure"]).reconfigure)
+
 
 class PromptUpdateTests(unittest.TestCase):
     def test_empty_answer_defaults_to_updating(self) -> None:
@@ -182,17 +376,60 @@ class QuietFailureTests(unittest.TestCase):
         # Tail only -- the whole log would defeat the point of running quiet.
         self.assertNotIn("line 1\n", printed)
 
-    def test_missing_build_dependencies_name_the_packages_and_the_command(self) -> None:
+    def test_missing_build_dependencies_are_reported_by_package_name(self) -> None:
         failed = subprocess.CompletedProcess(args=["python"], returncode=1, stdout="", stderr="")
         with mock.patch.object(install, "run_command", return_value=failed):
-            with self.assertRaises(SystemExit):
-                with mock.patch("sys.stderr", new=io.StringIO()) as err:
-                    install._require_build_dependencies()
-        printed = err.getvalue()
-        self.assertIn("python-build", printed)
-        self.assertIn("python-installer", printed)
+            self.assertEqual(
+                install._require_build_dependencies(),
+                ["python-build", "python-installer"],
+            )
 
-    def test_present_build_dependencies_do_not_raise(self) -> None:
+    def test_present_build_dependencies_report_nothing_missing(self) -> None:
         ok = subprocess.CompletedProcess(args=["python"], returncode=0, stdout="", stderr="")
         with mock.patch.object(install, "run_command", return_value=ok):
-            install._require_build_dependencies()
+            self.assertEqual(install._require_build_dependencies(), [])
+
+
+class EnsureBuildDependenciesTests(unittest.TestCase):
+    """The installer installs what the rebuild needs, rather than punting."""
+
+    def _patch_env(self, missing: list[str]):
+        self.enterContext(mock.patch.object(
+            install, "_require_build_dependencies", side_effect=[missing, []]))
+        self.enterContext(mock.patch.object(install, "_detect_distro", return_value="arch"))
+        self.enterContext(mock.patch.object(install.shutil, "which", return_value="/usr/bin/sudo"))
+
+    def test_accepting_installs_the_packages_as_dependencies(self) -> None:
+        """Build tooling is installed --asdeps, because that is what it is.
+
+        Marking it explicit would stop an orphan sweep ever reclaiming it,
+        which is the installer overriding the machine's cleanup policy to
+        spare itself a round trip. Whether build tooling stays installed is
+        the user's call; all this has to guarantee is that a sweep never
+        leaves the next rebuild dead-ended, which re-installing on demand
+        already does.
+        """
+
+        self._patch_env(["python-build", "python-installer"])
+        ok = subprocess.CompletedProcess(args=["pacman"], returncode=0, stdout="", stderr="")
+        with mock.patch("builtins.input", return_value=""):
+            with mock.patch.object(install, "run_command", return_value=ok) as run:
+                install.ensure_build_dependencies()
+
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:5], ["sudo", "pacman", "-S", "--needed", "--asdeps"])
+        self.assertIn("python-build", argv)
+        self.assertIn("python-installer", argv)
+
+    def test_declining_stops_with_the_manual_command(self) -> None:
+        self._patch_env(["python-installer"])
+        with mock.patch("builtins.input", return_value="n"):
+            with self.assertRaises(SystemExit):
+                with mock.patch("sys.stderr", new=io.StringIO()) as err:
+                    install.ensure_build_dependencies()
+        self.assertIn("python-installer", err.getvalue())
+
+    def test_nothing_missing_prompts_for_nothing(self) -> None:
+        with mock.patch.object(install, "_require_build_dependencies", return_value=[]):
+            with mock.patch("builtins.input", side_effect=AssertionError("prompted")):
+                install.ensure_build_dependencies()

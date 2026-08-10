@@ -1,127 +1,52 @@
 # Changelog
 
-## 0.14.2
+## 0.16.0
 
-### Fixed
+Rolls the daemon back to its 0.13.0 behaviour. Everything in 0.14.0–0.14.2
+is reverted; 0.15.0 was abandoned unreleased. Two pieces of tooling are
+carried forward, and nothing else.
 
-- **Dictation produced no text at all.** 0.14.0 added a per-recording counter
-  for the session-limit prompt and named it `_session_generation` — a name
-  already in use for something else entirely. That counter moves only when
-  the daemon rotates its session primitives (wedge recovery, safety-net
-  teardown), and `_decode_worker` reads it as "this session is gone, discard
-  your transcript". Bumping it on every recording start therefore made every
-  normal session look like a wedge recovery: the decode worker exited, the
-  transcript was dropped, and every session ended `final transcript emitted
-  (0 chars)` / `no speech detected`. The prompt's counter is now
-  `_recording_epoch` and the two are fully independent.
+### Reverted
 
-### Changed
+- **All of 0.14.x.** The IBus engine-activation work that motivated it was
+  chasing a problem that does not exist here. Over 30 days of daemon logs the
+  v0.11.1 self-heal recorded **81 failures and 0 successful heals** — the
+  probe was blind, so every session logged an error while the engine was
+  already active the whole time. The 0.14.0 "fix" restored the probe and the
+  errors stopped, but the heal it enables has still never once needed to
+  fire. That is the whole of what 0.14.0's headline change achieved: it
+  silenced a check complaining about itself.
+- Also reverted with it: the adaptive noise-floor VAD gate (off by default,
+  so inert), the notification-lifetime rework, the mic-gain change, and the
+  session-limit prompt changes. None had evidence of fixing a problem the
+  user was actually experiencing, and between them they caused three
+  user-visible regressions.
 
-- **The adaptive noise-floor gate is off by default** (`--noise-floor-margin`
-  now defaults to `0`). Measured on real hardware it tracked the speaker
-  rather than the room: a push-to-talk session is short and mostly speech, so
-  the trailing-window low percentile settled on quiet speech (~9000 RMS
-  against an ~11000-13000 speaking level) with no silence to anchor it. The
-  gate then either sat above the voice and rejected the session, or — with
-  the ceiling anchored to `energy_threshold`, which is a weak-microphone
-  floor and unrelated to the observed signal — was clamped below the noise
-  and passed every block, restoring the never-ending-utterance bug it was
-  added to fix. The mechanism is unchanged and still available; it is simply
-  opt-in until it can be tuned against real logs.
-- The noise floor is now measured and logged even when the gate is disabled,
-  and the `recording ended:` line reports the full `rms=min-max` range and the
-  margin in force. `peak_below_gate` collapses to 0 exactly when the gate is
-  wrong, which is when the number is needed most, so it is no longer the only
-  evidence available.
-- The forbidden-injector regression test no longer scans makepkg's
-  `packaging/src` and `packaging/pkg` staging trees. They hold extracted
-  whisper.cpp sources and pip-vendored wheels — numpy alone contains `wtype`
-  in unrelated places — so the guard failed on any machine where a package
-  had been built.
+### Kept
 
-## 0.14.1
-
-### Fixed
-
-- **The installer is quiet again.** 0.14.0 added the package rebuild without
-  suppressing its output, making it the only one of 18 subprocess calls in
-  `install.py` that wasn't quiet — so a rebuild dumped the whole wheel build,
-  pip vendoring, and cmake log over the one-screen checklist. Both the build
-  and the install now run quiet like every other step, and print the tail of
-  the captured output only when they fail, so a real build error is still
-  readable without the successful path being a wall of text.
-- **No more sudo/pacman prompts in the middle of a step.** Dropped
-  `makepkg --syncdeps`, which would start a package transaction inside a step
-  whose output was suppressed. Missing build dependencies are now detected up
-  front and reported with the exact command to install them, before anything
-  is built or changed. `sudo` credentials are likewise requested visibly
-  before the install step rather than from inside it.
-- Removed the `SetuptoolsDeprecationWarning` at its source: `pyproject.toml`
-  declares `license = "MIT"` as an SPDX string rather than a TOML table.
-
-## 0.14.0
-
-### Fixed
-
-- **Dictation typed nothing at all.** The `ibus` CLI locates its bus socket by
-  display name (`~/.config/ibus/bus/<machine-id>-unix-wayland-0`), not over
-  D-Bus. The daemon is started from `default.target` at login, before the
-  session exports `WAYLAND_DISPLAY` into the systemd user environment, so
-  every call read a stale socket file from an earlier session and failed with
-  `ibus_bus_get_global_engine: assertion 'IBUS_IS_BUS (bus)' failed`. The
-  active engine was therefore never switched to KDictate, nothing subscribed
-  to `FinalTranscript`, and audio was recorded and transcribed into the void.
-  The daemon now recovers the display variables from the systemd user manager
-  at call time. This is the failure the v0.11.x "self-heal" was meant to
-  catch — its probe was blind for the same reason.
-- **The "still recording" banner never went away.** `urgency=critical` never
-  auto-expires (freedesktop spec; Plasma ignores `--expire-time` for it), so
-  `notify-send --wait` never returned and the daemon killed it — which does
-  not retract a banner the server already accepted, it only drops the action
-  buttons with their sender. The result was a permanent banner claiming to be
-  recording, with a dead Continue button. The banner's lifetime is now managed
-  explicitly via `CloseNotification` and ends with the window it describes,
-  whether the user answers, the countdown elapses, or the user stops recording
-  first. Urgency stays `critical` so the prompt still reaches users in Do Not
-  Disturb / presentation mode.
-- **Utterances never ended on their own in a noisy room.** A fixed RMS
-  threshold cannot separate speech from silence when the input gain is not
-  fixed either, and the daemon forces the mic to 91% on activation. Ambient
-  noise measured several times `energy_threshold`, so every block scored as
-  voiced, no silence gap was ever found, and every utterance was chopped
-  mid-word at `--max-utterance-s` — giving Whisper noise-only fragments to
-  hallucinate over.
-- The session-limit prompt no longer discards a Continue click that lands in
-  the last moment of the countdown, and no longer stops a *new* recording
-  when the user restarts dictation while the previous prompt is still
-  resolving.
-
-### Added
-
-- **`install.py` is version-aware and now actually updates a packaged
-  install.** It reports the installed version and this tree's version, exits
-  immediately when they match, and otherwise prompts before doing anything
-  else. On a packaged system it rebuilds the package from the tree and
-  installs it, because configurator mode deliberately never writes Python
-  code — previously the installer would wire up the KDE bits, restart the
-  daemon on whatever the package already contained, and report success while
-  the new code was never deployed. The installed version is read from
-  `pacman -Q` rather than from the installed module, since the 0.12.0 package
-  shipped a wheel whose `APP_VERSION` still read 0.11.1. The packaged step
-  counter also no longer stops at 8/11.
-- **`--noise-floor-margin`** — the speech gate now adapts to measured ambient
-  noise instead of relying on a fixed threshold. The effective gate is
-  `max(--energy-threshold, noise_floor * margin)`, clamped to 8x
-  `--energy-threshold` so a loud room cannot push it above the user's own
-  voice. `0` restores pure fixed-threshold behavior. The `recording ended:`
-  log line now reports the measured `noise_floor` and the `gate` range, and a
-  session that heard nothing says which knob to turn.
-
-### Changed
-
-- `--energy-threshold` stays at 700 and keeps its v0.13.0 meaning for
-  weak/quiet microphones. It is now the *lower bound* of the adaptive gate
-  (and scales its ceiling) rather than the whole gate.
+- **Stale IBus engine processes are cleared on upgrade.** The one change from
+  this line of work with direct evidence behind it. An engine reads its
+  script once at spawn and keeps running it, so replacing the package leaves
+  the live engine on the old code while IBus spawns a second copy; both
+  receive the daemon's `FinalTranscript` broadcast but only one can hold the
+  focused input context, and dictation silently produces nothing until the
+  next reboot. `refresh_ibus_registry` killed `ibus-daemon` with `pkill -x`,
+  an exact *name* match that never reached `python …/ibus-engine-kdictate` —
+  so killing the daemon orphaned the engines instead of reaping them, and
+  they survived `ibus restart` too. Confirmed on a live system: clearing the
+  orphan restored dictation immediately.
+- **`install.py` rebuilds and installs the package**, quietly, with its build
+  dependencies handled rather than punted. Missing dependencies are detected
+  during preflight — before the checklist, so the pacman transaction and
+  password prompt happen in the open — named, and installed with consent
+  (`--asdeps`, leaving removal policy to the user's own orphan sweep). The
+  probes run under `-I` so neither the working directory nor `PYTHONPATH` can
+  shadow the module being checked. `--reconfigure` re-runs the configuration
+  steps when the version already matches, and repairs a Ctrl+Space binding
+  that Plasma has reset rather than assuming the section's presence means it
+  is intact.
+- A bare `pytest` at the repo root works again; it previously recursed into
+  makepkg's staging trees and reported 142 collection errors.
 
 ## 0.13.0 — 2026-06-04
 

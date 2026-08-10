@@ -19,6 +19,7 @@ Everything lives under ``$HOME``:
 
 from __future__ import annotations
 
+import argparse
 import os
 import shutil
 import subprocess
@@ -471,14 +472,103 @@ def configure_kwin_input_method(ctx: InstallContext) -> None:
 
 
 def register_global_shortcut(ctx: InstallContext) -> None:
+    """Ensure the Ctrl+Space binding exists *and* is correct.
+
+    Treating the section's presence as sufficient made this unrepairable in
+    the case that most needs repairing. Plasma rewrites kglobalshortcutsrc on
+    its own — a shortcut reset or a conflict can drop or change the ``_launch``
+    line while leaving the section behind — and the binding is then broken
+    with no way for ``--reconfigure`` to restore it, which is precisely what
+    that flag advertises.
+    """
+
     shortcut_file = ctx.home / ".config" / "kglobalshortcutsrc"
     section = f"[services][{TOGGLE_DESKTOP_NAME}]"
     entry = "_launch=Ctrl+Space, Ctrl+Space"
     content = shortcut_file.read_text(encoding="utf-8") if shortcut_file.exists() else ""
-    if section in content:
+
+    if section not in content:
+        content = content.rstrip("\n") + f"\n\n{section}\n{entry}\n"
+        write_home_file(ctx, shortcut_file, content)
         return
-    content = content.rstrip("\n") + f"\n\n{section}\n{entry}\n"
-    write_home_file(ctx, shortcut_file, content)
+
+    out: list[str] = []
+    in_section = False
+    has_entry = False
+    changed = False
+
+    for line in content.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("["):
+            if in_section and not has_entry:
+                # Section ended without a _launch line: restore it.
+                out.append(entry)
+                changed = True
+                has_entry = True
+            in_section = stripped == section
+        elif in_section and stripped.startswith("_launch="):
+            has_entry = True
+            if stripped != entry:
+                line = entry
+                changed = True
+        out.append(line)
+
+    if in_section and not has_entry:
+        out.append(entry)
+        changed = True
+
+    if not changed:
+        return
+    write_home_file(ctx, shortcut_file, "\n".join(out) + "\n")
+
+
+_ENGINE_PROCESS_PATTERN = "(libexec|bin)/ibus-engine-kdictate"
+
+
+def clear_stale_engine_processes() -> int:
+    """Terminate kdictate IBus engine processes so IBus respawns them fresh.
+
+    An engine process reads its script once at spawn time and keeps executing
+    what it loaded. Upgrading the package replaces that file on disk without
+    touching the running process, so afterwards the live engine is still
+    running the *previous* version's code — and the copy IBus spawns for the
+    new session sits alongside it. Both are on the session bus receiving the
+    daemon's ``FinalTranscript`` broadcast, while only one can hold the
+    focused input context, so a transcript can be delivered to an engine that
+    is not the one able to commit it.
+
+    The ``pkill -x ibus-daemon`` further down does not reach these: ``-x``
+    matches the process name exactly, and an engine runs as
+    ``python …/ibus-engine-kdictate``. Killing the daemon *orphans* the
+    engines rather than reaping them — which is why they also survive an
+    ``ibus restart``, observed here with an engine that outlived both.
+
+    Returns how many processes were signalled. Safe to call whenever the
+    on-disk engine has changed: IBus spawns an engine on demand, so the next
+    activation gets a fresh one running the installed code.
+    """
+
+    if shutil.which("pgrep") is None or shutil.which("pkill") is None:
+        return 0
+
+    uid = str(os.getuid())
+    # Restricted to this user, and matched on the executed path rather than a
+    # bare name, so nothing outside this install's own engines is touched.
+    select = ["-u", uid, "-f", _ENGINE_PROCESS_PATTERN]
+
+    found = run_command(["pgrep", *select], quiet=True, check=False)
+    pids = [tok for tok in found.stdout.split() if tok.isdigit()]
+    if not pids:
+        return 0
+
+    run_command(["pkill", *select], quiet=True, check=False)
+    time.sleep(0.5)
+
+    survivors = run_command(["pgrep", *select], quiet=True, check=False)
+    if [tok for tok in survivors.stdout.split() if tok.isdigit()]:
+        run_command(["pkill", "-9", *select], quiet=True, check=False)
+
+    return len(pids)
 
 
 def refresh_ibus_registry(ctx: InstallContext) -> None:
@@ -489,6 +579,10 @@ def refresh_ibus_registry(ctx: InstallContext) -> None:
     }
     # Update IBus component registry so ibus-daemon knows about the new engine.
     run_command(["ibus", "write-cache"], env=ibus_env, quiet=True)
+
+    # Clear engine processes left over from before this upgrade, before the
+    # daemon is restarted below.
+    clear_stale_engine_processes()
 
     # Tell KWin to re-read kwinrc so it picks up the InputMethod key written
     # by configure_kwin_input_method in the same install run.  Without this,
@@ -606,9 +700,20 @@ def _installed_version(ctx: InstallContext, packaged: bool) -> str | None:
 
     if not ctx.python_bin.exists():
         return None
+    # -I (isolated mode) so the probe answers about the *installed* copy and
+    # nothing else. `python -c` otherwise resolves sys.path[0] to the cwd —
+    # which for the documented `python3 install.py` from the repo root is the
+    # source tree itself — and additionally honours PYTHONPATH, which a
+    # development shell or IDE may well have pointing at this same checkout.
+    # Either route makes the probe import the tree it is installing *from*,
+    # report that version as installed, and turn the version gate below into
+    # a permanent "already up to date" no-op. -I covers both (it implies -P,
+    # -E and -s); cwd is moved out of the repo as belt and braces so the
+    # answer cannot depend on where the installer was invoked.
     result = run_command(
-        [ctx.python_bin, "-c", "from kdictate import __version__; print(__version__)"],
-        quiet=True, check=False,
+        [ctx.python_bin, "-I", "-c",
+         "from kdictate import __version__; print(__version__)"],
+        quiet=True, check=False, cwd=ctx.home,
     )
     if result.returncode != 0:
         return None
@@ -651,30 +756,89 @@ def _die_with_output(
     die(f"{message} (exit {result.returncode}). Last {min(tail, len(lines))} lines:\n\n{shown}")
 
 
-def _require_build_dependencies() -> None:
-    """Stop before a long build if makepkg's Python deps are missing.
+def _require_build_dependencies() -> list[str]:
+    """Return the package names makepkg needs that are not importable.
 
-    Deliberately *not* ``makepkg --syncdeps``: that hands the terminal to a
-    sudo password prompt and a pacman transaction in the middle of a step
-    whose output is suppressed, which is both startling and unreadable. A
-    missing dependency is a one-line fix the user should be told about up
-    front, before anything has been built or changed.
+    Pure detection — see :func:`ensure_build_dependencies` for the part that
+    acts on the answer.
     """
 
-    distro = _detect_distro()
+    # -I (isolated mode) and a cwd outside the checkout, for the same reason
+    # _installed_version needs them. This runs from a repo root that
+    # accumulates a `build/` directory from the very wheel step these
+    # dependencies exist to perform, and `python -c` both puts the cwd on
+    # sys.path and honours PYTHONPATH. Either route lets Python import that
+    # directory as an implicit namespace package, so `import build` succeeds
+    # against a pile of build artifacts and the check reports python-build
+    # present when pacman has never heard of it -- the user installs only what
+    # was reported, re-runs, and makepkg dies at `python -m build` anyway.
+    # -I closes both (it implies -P, -E and -s).
     missing = [
         package
         for module, package in (("build", "python-build"), ("installer", "python-installer"))
         if run_command(
-            [sys.executable, "-c", f"import {module}"], quiet=True, check=False,
+            [sys.executable, "-I", "-c", f"import {module}"],
+            quiet=True, check=False, cwd=Path.home(),
         ).returncode != 0
     ]
-    if missing:
+    return missing
+
+
+def ensure_build_dependencies() -> None:
+    """Install the rebuild's build dependencies, with consent.
+
+    Called during preflight rather than from inside the rebuild step, so the
+    pacman transaction and its password prompt happen in the open, before the
+    quiet one-screen checklist starts — not buried inside a step whose output
+    is suppressed. That was why ``makepkg --syncdeps`` was dropped; refusing
+    to install them at all was an overcorrection that left the user to run a
+    command and start over.
+
+    Installed with ``--asdeps``, because that is what they are: tooling this
+    build needs, not something the user asked to have on their system.
+    Marking them explicit would keep an orphan sweep from ever reclaiming
+    them, which is the installer overriding the machine's cleanup policy to
+    protect itself from a round trip. Whether build tooling stays installed
+    is the user's call — ``makepkg --rmdeps`` and ``yay --removemake`` exist
+    precisely so it can be — and this only has to guarantee that a sweep
+    never leaves the next rebuild dead-ended, which re-installing on demand
+    already does.
+    """
+
+    missing = _require_build_dependencies()
+    if not missing:
+        return
+
+    distro = _detect_distro()
+    hint = _pkg_hint(distro, " ".join(missing))
+    print("  The package rebuild needs these build dependencies:\n")
+    for package in missing:
+        print(f"      {package}")
+    print()
+
+    if distro != "arch" or shutil.which("sudo") is None:
+        die(f"Install them first:\n\n      {hint}\n\n      Then re-run this installer.")
+
+    while True:
+        choice = input("  Install them now? [Y/n]: ").strip().lower()
+        if choice in ("", "y", "yes"):
+            break
+        if choice in ("n", "no"):
+            die(f"Install them first:\n\n      {hint}\n\n      Then re-run this installer.")
+
+    print()
+    result = run_command(
+        ["sudo", "pacman", "-S", "--needed", "--asdeps", *missing], check=False,
+    )
+    print()
+    if result.returncode != 0:
+        die(f"Installing the build dependencies failed.\n\n      Try:  {hint}")
+
+    still_missing = _require_build_dependencies()
+    if still_missing:
         die(
-            "Missing build dependencies for the package rebuild:\n\n"
-            + "".join(f"        {package}\n" for package in missing)
-            + f"\n      Install:  {_pkg_hint(distro, ' '.join(missing))}\n\n"
-            "      Then re-run this installer."
+            "These are still not importable after installing:\n\n"
+            + "".join(f"        {package}\n" for package in still_missing)
         )
 
 
@@ -696,7 +860,17 @@ def rebuild_and_install_package(ctx: InstallContext) -> None:
 
     for tool in ("makepkg", "pacman", "sudo"):
         require_command(tool)
-    _require_build_dependencies()
+    # Belt and braces: ensure_build_dependencies() already resolved these
+    # during preflight, where a pacman prompt can be shown in the open. If
+    # anything is still missing by the time we get here, fail now rather than
+    # several minutes into a build that cannot succeed.
+    missing = _require_build_dependencies()
+    if missing:
+        die(
+            "Missing build dependencies for the package rebuild:\n\n"
+            + "".join(f"        {package}\n" for package in missing)
+            + f"\n      Install:  {_pkg_hint(_detect_distro(), ' '.join(missing))}"
+        )
 
     pkg_dir = ctx.script_dir / "packaging"
     result = run_command(["makepkg", "--force"], cwd=pkg_dir, quiet=True, check=False)
@@ -779,7 +953,28 @@ def _write_backend_dropin(ctx: InstallContext) -> None:
 # Main
 # -------------------------------------------------------------------
 
-def main() -> int:
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parse the installer's own options."""
+
+    parser = argparse.ArgumentParser(
+        prog="install.py",
+        description="Install or update KDictate for the current user.",
+    )
+    parser.add_argument(
+        "--reconfigure",
+        action="store_true",
+        help="Re-run the configuration steps even when the installed version "
+             "already matches this tree. Use this to repair a broken install "
+             "-- a clobbered Ctrl+Space binding, a missing IBus engine "
+             "registration, a backend switch -- without having to change the "
+             "version number first.",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+
     if os.geteuid() == 0:
         die(
             "Run as your user, not root.\n\n"
@@ -799,20 +994,39 @@ def main() -> int:
 
     # Version gate first, before any other prompt: a system that is already
     # current should cost one command and no questions.
+    #
+    # --reconfigure exists because every configuration step below is
+    # idempotent and re-running them is the documented repair path (a Plasma
+    # reset clobbers the Ctrl+Space binding, the IBus preload list loses its
+    # entry, the backend needs switching). Gating those behind a version
+    # change would leave a user whose install is broken *at the current
+    # version* with no way to fix it short of editing app_metadata.py, so the
+    # exit below names the flag rather than just refusing.
     packaged = _is_packaged_install()
     installed = _installed_version(ctx, packaged)
-    if installed is not None and installed == __version__:
-        print(f"  Already at {__version__} — nothing to do.\n")
+    up_to_date = installed is not None and installed == __version__
+
+    if up_to_date and not args.reconfigure:
+        print(f"  Already at {__version__} — nothing to do.")
+        print("  Re-run with --reconfigure to repair the KDE/IBus wiring.\n")
         return 0
-    if not _prompt_update(installed):
+
+    if up_to_date:
+        print(f"  Already at {__version__}; reconfiguring at your request.\n")
+    elif not _prompt_update(installed):
         print("\n  Cancelled — nothing was changed.\n")
         return 0
+
+    # Reconfiguring at the same version has nothing to rebuild: the installed
+    # package already contains this tree's code, and a rebuild is the single
+    # most expensive step there is (whisper.cpp + Vulkan, minutes).
+    rebuild = packaged and not up_to_date
 
     # The two modes run different step sets; the count was previously
     # hardcoded to the source-install total, so a packaged run counted up to
     # 8/11 and stopped.
     global _TOTAL_STEPS  # noqa: PLW0603
-    _TOTAL_STEPS = 9 if packaged else 11
+    _TOTAL_STEPS = (9 if rebuild else 8) if packaged else 11
 
     gpu = _prompt_backend()
     if gpu:
@@ -822,10 +1036,13 @@ def main() -> int:
         )
 
     print()
-    if packaged:
+    if packaged and rebuild:
         log("Packaged install detected — rebuilding the system package from "
             "this tree, then configuring it (model + per-user KDE wiring + "
             "system service; no venv).")
+    elif packaged:
+        log("Packaged install detected — reconfiguring only (model + per-user "
+            "KDE wiring + system service); the package is already current.")
 
     preflight_ibus()
     required = ["python3", "systemctl", "dconf"]
@@ -834,9 +1051,14 @@ def main() -> int:
     for cmd in required:
         require_command(cmd)
 
+    # Before the checklist, so the pacman transaction and its password prompt
+    # happen in the open rather than inside a step whose output is suppressed.
+    if rebuild:
+        ensure_build_dependencies()
+
     pkg = ctx.script_dir / "packaging"
 
-    if packaged:
+    if rebuild:
         # The step that actually moves code onto the system, and the long one
         # (whisper.cpp + Vulkan). Signposted in the label because it runs
         # quiet like the rest, so there is nothing else to watch.
