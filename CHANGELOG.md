@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.0.0rc1 (unreleased)
+
+- Upgrade the private Vulkan speech stack from whisper.cpp 1.8.6 to 1.9.5.
+  Whisper large-v3-turbo Q8_0 weights stay unchanged.
+- Keep the selected GPU model loaded in a private worker and warm its decode
+  path at startup. Release it on daemon shutdown; bound requests and clean up
+  crashed or unresponsive workers.
+- Add Parakeet TDT 0.6B v3 Q8_0 as an installer option alongside Whisper GPU
+  and Whisper CPU. Keep Whisper as the default and existing `gpu` flags valid.
+- Pin GPU model revisions and verify SHA-256 before accepting downloads.
+- Add reproducible LibriSpeech accuracy/latency benchmarks, silence checks,
+  and tests for worker failures, model selection and installer configuration.
+- On the Radeon 760M test host, 60 speech clips gave median decode times of
+  2.20s for the existing CLI, 1.75s for resident Whisper and 0.17s for resident
+  Parakeet. WER was 2.69%, 2.59% and 2.96%, respectively. This small audiobook
+  sample needs follow-up with live microphone recordings. See the
+  [complete comparison](benchmarks/results/2026-10-15/report.html).
+
 ## 0.18.1
 
 ### Fixed

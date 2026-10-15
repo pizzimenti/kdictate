@@ -15,12 +15,12 @@
 # so one package, compiled once, runs across Ryzen Zen 2 -> Zen 5.
 
 pkgname=kdictate
-pkgver=0.18.1
+pkgver=1.0.0rc1
 pkgrel=1
 
 # The ONLY knob controlling the GPU transcription stack. Bump it
 # deliberately when cutting a kdictate release; it never floats.
-_whisper_ver=1.8.6
+_whisper_ver=1.9.5
 
 pkgdesc='Push-to-talk dictation for KDE Plasma (Vulkan-accelerated)'
 arch=('x86_64')
@@ -56,7 +56,7 @@ source=(
   "whisper.cpp-${_whisper_ver}.tar.gz::https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v${_whisper_ver}.tar.gz"
 )
 sha256sums=(
-  'f8e632016ceae556f3132a16c7f704be1e7715595041f474fa81a2b64c1abf7c'
+  'ff1a9053feb509ff9d7729703355541ae9690073a6b1c40eb692c962e0dc1720'
 )
 
 _prefix='/usr/lib/kdictate'
@@ -64,7 +64,7 @@ _entrypoints=(kdictate-daemon kdictatectl ibus-engine-kdictate)
 
 build() {
   local src="${srcdir}/whisper.cpp-${_whisper_ver}"
-  local bld="${srcdir}/whisper-build"
+  local bld="${srcdir}/whisper-build-${_whisper_ver}"
 
   # 1. kdictate's own wheel. The PKGBUILD lives in packaging/, so the
   #    project root (pyproject.toml) is one level up from ${startdir}.
@@ -107,6 +107,7 @@ build() {
     -DWHISPER_BUILD_TESTS=OFF \
     -DWHISPER_BUILD_EXAMPLES=ON
   cmake --build "${bld}"
+  bash "${startdir}/build-stt-worker.sh" "${src}" "${bld}"
 }
 
 package() {
@@ -114,7 +115,7 @@ package() {
   cd "${startdir}/.."
 
   # --- kdictate Python package (code -> system site-packages) ---
-  python -m installer --destdir="${pkgdir}" dist/*.whl
+  python -m installer --prefix=/usr --destdir="${pkgdir}" dist/*.whl
 
   # --- vendored runtime deps ---
   install -d "${pkgdir}${_prefix}/vendor"
@@ -137,9 +138,11 @@ package() {
     install -Dm755 packaging/kdictate-launcher.sh "${pkgdir}/usr/bin/${ep}"
   done
 
-  # --- vendored whisper-cli + ggml backend modules ---
-  DESTDIR="${pkgdir}" cmake --install "${srcdir}/whisper-build"
-  # Ship only the CLI: drop headers, cmake/pkgconfig, and the other example
+  # --- native worker, speech libraries and ggml backend modules ---
+  DESTDIR="${pkgdir}" cmake --install "${srcdir}/whisper-build-${_whisper_ver}"
+  install -Dm755 "${srcdir}/whisper-build-${_whisper_ver}/bin/kdictate-stt-worker" \
+    "${pkgdir}${_prefix}/bin/kdictate-stt-worker"
+  # Ship the worker and benchmark CLIs: drop headers, cmake/pkgconfig and other example
   # executables -- but KEEP the dlopen'd ggml backend modules that
   # BACKEND_DL installs next to whisper-cli (libggml-vulkan.so and the
   # libggml-cpu-*.so CPU variants). Deleting them leaves whisper-cli with no
@@ -148,7 +151,8 @@ package() {
          "${pkgdir}${_prefix}/lib/cmake" \
          "${pkgdir}${_prefix}/lib/pkgconfig"
   find "${pkgdir}${_prefix}/bin" -maxdepth 1 -type f \
-       ! -name 'whisper-cli' ! -name '*.so' ! -name '*.so.*' -delete
+       ! -name 'whisper-cli' ! -name 'parakeet-cli' ! -name 'kdictate-stt-worker' \
+       ! -name '*.so' ! -name '*.so.*' -delete
 
   # --- system integration (templates rendered from per-user to system) ---
   # IBus engine component.

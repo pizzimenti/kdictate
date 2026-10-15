@@ -76,10 +76,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--backend",
-        choices=("cpu", "gpu"),
+        choices=("cpu", "gpu", "parakeet"),
         default="cpu",
-        help="Transcription backend: cpu (faster-whisper) or gpu (whisper.cpp "
-             "Vulkan). Chosen once at install time; no runtime fallback.",
+        help="Transcription backend: cpu (faster-whisper), gpu (Whisper Vulkan), "
+             "or parakeet (Parakeet Vulkan). Chosen at install time; no runtime fallback.",
     )
     parser.add_argument(
         "--model-dir",

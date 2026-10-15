@@ -600,6 +600,20 @@ class DictationDaemonTest(unittest.TestCase):
             # executed. Only the gate task ran.
             self.assertEqual(ran, ["gate"])
 
+    def test_shutdown_closes_resident_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = RuntimePaths(state_file=Path(tmpdir)/"state", last_text_file=Path(tmpdir)/"last")
+            backend = _StubBackend()
+            backend.close = mock_close = unittest.mock.Mock()
+            daemon = DictationDaemon(
+                _make_config(paths), backend=backend, runtime_paths=paths,
+                event_sink=_RecordingEventSink(events=[]),
+                stream_factory=lambda **kwargs: _DummyStream(),
+                input_device_resolver=lambda: ("microphone", True),
+            )
+            daemon.shutdown()
+            mock_close.assert_called_once_with()
+
     def test_main_does_not_attach_event_sink_when_service_start_fails(self) -> None:
         events: list[str] = []
 

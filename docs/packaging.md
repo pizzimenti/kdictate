@@ -1,9 +1,9 @@
 # Packaging: the vendored whisper.cpp GPU stack
 
-KDictate's GPU backend shells out to a `whisper-cli` binary. How that
-binary gets onto the system is a deliberate, slightly unusual choice, and
-this document explains why — so a future maintainer doesn't "simplify" it
-back into the problem it solves.
+KDictate's GPU backend keeps Whisper or Parakeet loaded in a private
+`kdictate-stt-worker` process. The worker and benchmark CLIs link against
+the same pinned speech libraries. This document records why the stack is
+vendored and how to update it.
 
 ## The problem we're avoiding
 
@@ -56,7 +56,7 @@ From `packaging/PKGBUILD`:
 | `GGML_VULKAN=ON` | The GPU decode path |
 | `GGML_NATIVE=OFF` | Do **not** bake the build host's `-march=native`; an AVX-512 binary built on Zen 4 would `SIGILL` on Zen 2/3 |
 | `GGML_CPU_ALL_VARIANTS=ON` + `GGML_BACKEND_DL=ON` | Compile baseline/AVX2/AVX-512 CPU codepaths and dispatch at runtime — one package, compiled once, runs portably *and* fast across Ryzen Zen 2 → Zen 5 |
-| `WHISPER_SDL2=OFF` | We feed WAV over stdin, so SDL2 is unused. It also gates the `talk-llama` example — the thing whose `ggml`-ABI mismatch caused the original break |
+| `WHISPER_SDL2=OFF` | The worker receives PCM over private pipes, so SDL2 is unused. It also gates the `talk-llama` example — the thing whose `ggml`-ABI mismatch caused the original break |
 | `WHISPER_FFMPEG=OFF`, `WHISPER_BUILD_SERVER=OFF`, `WHISPER_BUILD_TESTS=OFF` | Unused; trims the build |
 | RPATH `$ORIGIN/../lib` | So `whisper-cli` in `…/bin` finds its bundled `libggml-*.so` (incl. the CPU variants and the Vulkan backend) in `…/lib` |
 
@@ -78,11 +78,12 @@ daily firehose.
 
 ## Binary resolution (runtime)
 
-`backend.find_whisper_cpp()` resolves the binary most- to least-specific:
+`backend.find_stt_worker()` resolves the worker most- to least-specific:
 
-1. `$KDICTATE_WHISPER_CLI` — explicit override (dev / custom builds)
-2. the vendored `/usr/lib/kdictate/bin/whisper-cli` (packaged installs)
-3. a `whisper-cli` / `whisper-cpp` on `PATH` (source/dev fallback)
+1. `$KDICTATE_STT_WORKER` — explicit override (dev / custom builds)
+2. `/usr/lib/kdictate/bin/kdictate-stt-worker` (packaged installs)
+3. `~/.local/share/kdictate/native/bin/kdictate-stt-worker` (source installs)
+4. `kdictate-stt-worker` on `PATH`
 
 ## Development from a source checkout
 
@@ -91,13 +92,13 @@ locally with the dev helper and point kdictate at it:
 
 ```bash
 ./packaging/build-whisper.sh
-export KDICTATE_WHISPER_CLI="$PWD/.whisper/build/bin/whisper-cli"
+export KDICTATE_STT_WORKER="$PWD/.whisper/build/bin/kdictate-stt-worker"
 ```
 
-The dev build uses `GGML_NATIVE=ON` and a single static binary (it only
-runs on your machine, so tuning is free and simplest). The shipped package
-uses the portable multi-variant build instead; transcription output is
-identical — only CPU dispatch differs.
+The dev build uses `GGML_NATIVE=ON` with shared libraries beside the worker.
+The source installer copies those libraries with the worker. The package uses
+portable CPU variants and a version-specific build directory so an engine
+upgrade cannot accidentally reuse the previous engine's CMake configuration.
 
 ## Alternatives considered
 
@@ -126,10 +127,10 @@ can't) or the per-machine compiles a `NATIVE=ON` source build forces.
   compute runs on the GPU anyway — so the CPU-path delta is small.
 - **Stale-Arch edge case:** the binary dynamically links glibc/libstdc++/
   libvulkan. On rolling Arch this is a non-issue; a very out-of-date install
-  could in theory hit a glibc-too-old error, and the GPU probe falls back to
-  CPU if so.
-- The **model weights (~874 MB)** are not vendored — they remain downloaded
-  on first run (see follow-ups).
+  could in theory hit a glibc-too-old error, and GPU startup reports a failure if so.
+- The **model weights** are downloaded by the installer: 874 MB for Whisper
+  or 669 MB for Parakeet. Both revisions and SHA-256 values are pinned in
+  `app_metadata.py`; existing files must pass verification before reuse.
 
 ## Python runtime (also vendored)
 
@@ -143,7 +144,7 @@ the AUR ships instead of `requirements.txt`.
 Instead, exactly like the **voiceagent** package:
 
 - `build()` runs `pip install --target …/vendor -r packaging/vendor-requirements.txt --only-binary=:all:`, vendoring the deps as wheels into `/usr/lib/kdictate/vendor`.
-- The wheel's console scripts are moved to `/usr/lib/kdictate/libexec/`, and `/usr/bin/{kdictate-daemon,kdictatectl,ibus-engine-kdictate}` become symlinks to `packaging/kdictate-launcher.sh`, which prepends the vendor dir (and system site-packages) to `PYTHONPATH` before exec'ing the real entry point.
+- The wheel's console scripts are moved to `/usr/lib/kdictate/libexec/`, and `/usr/bin/{kdictate-daemon,kdictatectl,ibus-engine-kdictate}` use regular copies of `packaging/kdictate-launcher.sh`, which prepends the vendor dir (and system site-packages) to `PYTHONPATH` before exec'ing the real entry point.
 - **`PyGObject` is the one exception** — it builds C bindings against the system `gobject-introspection` and isn't a clean `--only-binary` target, so it ships as the `python-gobject` system dependency. `python-gobject` lives in the system site-packages, which the launcher also puts on `PYTHONPATH`.
 
 `packaging/vendor-requirements.txt` mirrors `requirements.txt` minus
@@ -156,7 +157,7 @@ The IBus component, systemd unit, and D-Bus service files carry
 placeholders that `install.py` renders for a per-user venv install. The
 package renders them to **system** paths in `package()` (entry points under
 `/usr/bin`, component under `/usr/share/ibus/component`, etc.), defaulting
-the daemon to `--backend gpu` (the installer pins the real gpu/cpu choice via
+the daemon to `--backend gpu` (the installer pins the selected Whisper GPU / Parakeet GPU / Whisper CPU choice via
 a user drop-in — never `auto`/both). `@@HOME@@` becomes `${HOME}`, which
 `environment.d` expands per-user at session start.
 

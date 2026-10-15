@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import hashlib
 import os
 import shutil
 import signal
@@ -38,7 +39,12 @@ from kdictate.app_metadata import (
     DEFAULT_MODEL_NAME,
     GGML_MODEL_FILENAME,
     GGML_MODEL_HF_REPO,
-    GGML_MODEL_PATH,
+    GGML_MODEL_REVISION,
+    GGML_MODEL_SHA256,
+    PARAKEET_MODEL_FILENAME,
+    PARAKEET_MODEL_HF_REPO,
+    PARAKEET_MODEL_REVISION,
+    PARAKEET_MODEL_SHA256,
 )
 from kdictate.constants import APP_ROOT_ID, DBUS_BUS_NAME, DBUS_INTERFACE
 
@@ -64,7 +70,11 @@ class InstallContext:
     script_dir: Path
     home: Path
     runtime_dir: Path
-    gpu: bool = False
+    backend: str = "cpu"
+
+    @property
+    def gpu(self) -> bool:
+        return self.backend in ("gpu", "parakeet")
 
     @property
     def venv_dir(self) -> Path:
@@ -89,7 +99,7 @@ class InstallContext:
             "@@ENGINE_EXEC@@": str(self.engine_exec),
             "@@HOME@@": str(self.home),
             "@@APP_VERSION@@": __version__,
-            "@@BACKEND_FLAGS@@": " --backend gpu" if self.gpu else " --backend cpu",
+            "@@BACKEND_FLAGS@@": f" --backend {self.backend}",
         }
 
 
@@ -197,29 +207,28 @@ def _pkg_hint(distro: str, pkg: str) -> str:
 # -------------------------------------------------------------------
 
 def _detect_gpu() -> tuple[str | None, list[str]]:
-    """Return (whisper_cpp_binary, reasons_unavailable)."""
+    """Return (native worker, reasons_unavailable)."""
     reasons: list[str] = []
     distro = _detect_distro()
 
-    # Mirror kdictate.backend.find_whisper_cpp resolution so the installer's
-    # GPU detection agrees with runtime discovery: an explicit
-    # $KDICTATE_WHISPER_CLI override (e.g. a packaging/build-whisper.sh build
-    # in a source checkout), then the vendored package binary, then PATH.
-    override = os.environ.get("KDICTATE_WHISPER_CLI")
-    vendored = Path("/usr/lib/kdictate/bin/whisper-cli")
-    if override and os.path.isfile(override) and os.access(override, os.X_OK):
-        binary = override
-    elif vendored.is_file() and os.access(vendored, os.X_OK):
-        binary = str(vendored)
-    else:
-        binary = shutil.which("whisper-cli") or shutil.which("whisper-cpp")
+    candidates = [os.environ.get("KDICTATE_STT_WORKER"),
+                  str(Path(__file__).resolve().parent / ".whisper/build/bin/kdictate-stt-worker"),
+                  "/usr/lib/kdictate/bin/kdictate-stt-worker",
+                  shutil.which("kdictate-stt-worker")]
+    binary = next((p for p in candidates if p and os.path.isfile(p) and os.access(p, os.X_OK)), None)
+    # Upgrading an older packaged install builds the worker before use.
+    # Its existing CLI establishes availability for the selection prompt.
+    if binary is None and _is_packaged_install():
+        old_cli = Path("/usr/lib/kdictate/bin/whisper-cli")
+        if old_cli.is_file():
+            binary = str(old_cli)
     if binary is None:
         # Packaged installs resolve to the vendored binary above and never
         # reach here. This hint is for source/dev checkouts: build the
         # *pinned* whisper so dev matches what ships — no AUR, no
         # llama.cpp-vulkan, no daily churn.
         hint = "./packaging/build-whisper.sh   (builds the pinned whisper.cpp)"
-        reasons.append(f"whisper.cpp not found\n        Install:  {hint}")
+        reasons.append(f"native speech worker not found\n        Build:  {hint}")
 
     if shutil.which("vulkaninfo") is None:
         reasons.append(
@@ -238,23 +247,24 @@ def _detect_gpu() -> tuple[str | None, list[str]]:
     return binary, reasons
 
 
-def _prompt_backend() -> bool:
-    """Auto-detect GPU and ask the user.  Returns True for GPU mode."""
-    binary, reasons = _detect_gpu()
+def _prompt_backend() -> str:
+    """Ask for exactly one model; keep Whisper as the default."""
+    _, reasons = _detect_gpu()
 
     try:
         if not reasons:
             print("  GPU acceleration is available:\n")
-            print(f"    whisper.cpp: {binary}")
-            print("    Vulkan:      supported\n")
-            print("    [1] GPU mode  (whisper.cpp + Vulkan, faster)")
-            print("    [2] CPU mode  (faster-whisper, no extra deps)\n")
+            print("    [1] Whisper GPU  (large-v3-turbo, default, 874 MB)")
+            print("    [2] Whisper CPU  (no GPU required, about 1.6 GB)")
+            print("    [3] Parakeet GPU (TDT 0.6B v3, 669 MB)\n")
             while True:
-                choice = input("  Select [1/2] (default: 1): ").strip()
+                choice = input("  Select [1/2/3] (default: 1): ").strip()
                 if choice in ("", "1"):
-                    return True
+                    return "gpu"
                 if choice == "2":
-                    return False
+                    return "cpu"
+                if choice == "3":
+                    return "parakeet"
         else:
             print("  GPU acceleration is not available:\n")
             for reason in reasons:
@@ -263,13 +273,13 @@ def _prompt_backend() -> bool:
             while True:
                 choice = input("  Proceed with CPU-only install? [Y/n]: ").strip().lower()
                 if choice in ("", "y", "yes"):
-                    return False
+                    return "cpu"
                 if choice in ("n", "no"):
                     die("Install cancelled.")
     except EOFError:
         die("No interactive input available. Run install.py from a terminal.")
 
-    return False
+    return "cpu"
 
 
 # -------------------------------------------------------------------
@@ -345,6 +355,25 @@ def sync_runtime(ctx: InstallContext) -> None:
     ])
     copy_home_file(ctx, ctx.script_dir / "requirements.txt", ctx.runtime_dir / "requirements.txt")
     copy_home_file(ctx, ctx.script_dir / "pyproject.toml", ctx.runtime_dir / "pyproject.toml")
+    if ctx.gpu:
+        worker, reasons = _detect_gpu()
+        if reasons or not worker or Path(worker).name != "kdictate-stt-worker":
+            die("Build the native speech worker with ./packaging/build-whisper.sh first.")
+        source = Path(worker).parent
+        dest = ctx.runtime_dir / "native/bin"
+        _ensure_under_home(ctx, dest)
+        dest.mkdir(parents=True, exist_ok=True)
+        # Resolve symlinks while copying: source build paths must not leak
+        # into a user's runtime. GGML's modules live beside the executable.
+        for path in source.iterdir():
+            if path.name == "kdictate-stt-worker" or ".so" in path.name:
+                if path.resolve() != (dest / path.name).resolve():
+                    shutil.copy2(path, dest / path.name, follow_symlinks=True)
+        # Installed libraries can also live in ../lib.
+        lib = source.parent / "lib"
+        if lib.is_dir():
+            for path in lib.glob("*.so*"):
+                shutil.copy2(path, dest / path.name, follow_symlinks=True)
 
 
 def install_python_environment(ctx: InstallContext) -> None:
@@ -429,27 +458,33 @@ def download_cpu_model(ctx: InstallContext) -> None:
 
 
 def download_gpu_model(ctx: InstallContext) -> None:
-    """Download the GGML Q8_0 model (single file, single progress bar).
+    """Provision and verify only the selected GPU model."""
+    parakeet = ctx.backend == "parakeet"
+    repo = PARAKEET_MODEL_HF_REPO if parakeet else GGML_MODEL_HF_REPO
+    filename = PARAKEET_MODEL_FILENAME if parakeet else GGML_MODEL_FILENAME
+    expected = PARAKEET_MODEL_SHA256 if parakeet else GGML_MODEL_SHA256
+    revision = PARAKEET_MODEL_REVISION if parakeet else GGML_MODEL_REVISION
+    path = ctx.runtime_dir / filename
+    path.parent.mkdir(parents=True, exist_ok=True)
 
-    Skips the download if the file is already on disk — see
-    ``download_cpu_model`` for why this matters.
-    """
-    GGML_MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
-    # Per-file minimum size, conservatively below the published ~834 MB.  The
-    # GGML Q8_0 large-v3-turbo file is single-blob; a partial download leaves a
-    # smaller-but-nonzero file that loads as a corrupted model at runtime.
-    # See download_cpu_model for the same pattern on the CT2 model.
-    if GGML_MODEL_PATH.is_file() and GGML_MODEL_PATH.stat().st_size >= 700_000_000:
-        print(f"  (model already present at {GGML_MODEL_PATH}, skipping download)")
+    def valid() -> bool:
+        if not path.is_file():
+            return False
+        with path.open("rb") as stream:
+            return hashlib.file_digest(stream, "sha256").hexdigest() == expected
+
+    if valid():
+        print(f"  (verified model at {path}, skipping download)")
         return
     py, env = _hf_download_env(ctx)
     subprocess.run([
         py, "-u", "-c",
         f"from huggingface_hub import hf_hub_download; "
-        f"hf_hub_download(repo_id={GGML_MODEL_HF_REPO!r}, "
-        f"filename={GGML_MODEL_FILENAME!r}, "
-        f"local_dir={str(GGML_MODEL_PATH.parent)!r})",
+        f"hf_hub_download(repo_id={repo!r}, revision={revision!r}, "
+        f"filename={filename!r}, local_dir={str(path.parent)!r}, force_download=True)",
     ], check=True, env=env)
+    if not valid():
+        die(f"Model checksum failed: {path}. Re-run the installer to retry.")
 
 
 def next_preload_engines(current: str, engine_id: str) -> str | None:
@@ -1429,11 +1464,11 @@ def _write_backend_dropin(ctx: InstallContext) -> None:
     """Pin the package's system service to the install-time backend choice.
 
     The package unit ships a default backend flag; this systemd drop-in
-    overrides ExecStart with the explicit gpu/cpu chosen here, so a packaged
+    overrides ExecStart with the explicit model chosen here, so a packaged
     install runs exactly one backend -- never auto/both, no runtime fallback.
     """
     if ctx.gpu:
-        exec_args = "--backend gpu"
+        exec_args = f"--backend {ctx.backend}"
     else:
         # The packaged daemon's default CT2 model_dir is PROJECT_ROOT-relative
         # (site-packages), not the runtime dir where install.py downloads it,
@@ -1537,12 +1572,11 @@ def main(argv: list[str] | None = None) -> int:
     global _TOTAL_STEPS  # noqa: PLW0603
     _TOTAL_STEPS = (10 if rebuild else 9) if packaged else 12
 
-    gpu = _prompt_backend()
-    if gpu:
-        ctx = InstallContext(
-            script_path=ctx.script_path, script_dir=ctx.script_dir,
-            home=ctx.home, runtime_dir=ctx.runtime_dir, gpu=True,
-        )
+    selected_backend = _prompt_backend()
+    ctx = InstallContext(
+        script_path=ctx.script_path, script_dir=ctx.script_dir,
+        home=ctx.home, runtime_dir=ctx.runtime_dir, backend=selected_backend,
+    )
 
     print()
     if packaged and rebuild:
@@ -1588,10 +1622,10 @@ def main(argv: list[str] | None = None) -> int:
         install_python_environment(ctx)
         step_done()
 
-    if gpu:
+    if ctx.gpu:
         step("Downloading GPU model")
         download_gpu_model(ctx)
-        step_done(GGML_MODEL_HF_REPO)
+        step_done(PARAKEET_MODEL_HF_REPO if ctx.backend == "parakeet" else GGML_MODEL_HF_REPO)
     else:
         step("Downloading CPU model")
         download_cpu_model(ctx)
@@ -1604,7 +1638,7 @@ def main(argv: list[str] | None = None) -> int:
 
         step("Pinning backend")
         _write_backend_dropin(ctx)
-        step_done(f"--backend {'gpu' if gpu else 'cpu'}")
+        step_done(f"--backend {ctx.backend}")
     else:
         # A prior packaged/configurator run leaves a backend drop-in that would
         # override this venv-backed unit; clear it before writing the source one.
@@ -1676,7 +1710,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     verb = "configured" if packaged else "installed"
-    mode = "GPU (Vulkan)" if gpu else "CPU (faster-whisper)"
+    mode = {"gpu": "Whisper GPU", "parakeet": "Parakeet GPU", "cpu": "Whisper CPU"}[ctx.backend]
     if problems:
         print(f"\n  ⚠️  KDictate {__version__} {verb} ({mode}), but the "
               "input-method stack has problems:\n")

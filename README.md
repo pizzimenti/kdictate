@@ -1,24 +1,26 @@
 # KDictate
 
-Local Whisper dictation for KDE Plasma Wayland via IBus.
+Local speech dictation for KDE Plasma Wayland via IBus.
 
 KDictate is architecturally distinct from generic `whisper-copy-paste`-style tools: it
 solves text placement correctly on **KDE Plasma Wayland** by going through IBus and
 the KWin input-method protocol, rather than relying on synthetic-keystroke injectors
 or clipboard hacks. The `K`-prefix advertises the target environment.
 
-The system is split into two cooperating processes that talk over session D-Bus:
+Two desktop components talk over session D-Bus:
 
 1. **Core dictation daemon** (`kdictate-daemon` / `python -m kdictate.core`): persistent mic
    capture/transcribe worker that publishes transcript/state events on the
-   session D-Bus.
+   session D-Bus. GPU transcription runs in its resident native model worker.
 2. **IBus frontend** (`ibus-engine-kdictate` / `python -m kdictate.ibus_engine`): the only component
    allowed to place text into applications; it consumes daemon transcript
    events and maps them to IBus preedit and commit.
 
-This project uses `openai/whisper-large-v3-turbo` for local English dictation.
-CPU mode uses CTranslate2 int8; GPU mode uses whisper.cpp with Vulkan (Q8_0).
-The installer auto-detects GPU availability and prompts you to choose.
+Choose Whisper large-v3-turbo on CPU or GPU, or Parakeet TDT 0.6B v3 on GPU.
+The 1.0 release candidate keeps GPU models resident for faster responses,
+using the pinned whisper.cpp 1.9.5 stack with Vulkan (Q8_0).
+The installer detects GPU availability and prompts for one model; Whisper is
+the default. See [GPU options and benchmarks](docs/gpu-mode.md).
 
 > KWin Wayland + IBus is the supported configuration. On GNOME or other Wayland
 > compositors the daemon + IBus engine path *may* work but is untested.
@@ -38,7 +40,7 @@ pip install -r requirements-dev.txt
 ### System dictation daemon
 
 On Arch/Manjaro, `install.py` handles everything — dependencies, venv, model
-download (~780 MB from HuggingFace on first run), systemd/D-Bus/IBus
+selected-model download from Hugging Face, systemd/D-Bus/IBus
 registration, and KDE integration:
 
 ```bash
@@ -140,10 +142,9 @@ behavior stays consistent across shells and user services.
 
 ## GPU mode (optional)
 
-KDictate can optionally use whisper.cpp with Vulkan for GPU-accelerated
-transcription.  This cuts the ~5s per-utterance decode time on CPU to
-~2.5s.  No vendor-specific drivers (ROCm, CUDA) are required — Vulkan
-works across AMD, NVIDIA, and Intel GPUs.
+KDictate supports Whisper and Parakeet through Vulkan. GPU models stay
+loaded between utterances to reduce response time. No CUDA or ROCm stack
+is required; a working Vulkan driver is needed.
 
 ### Setup
 
@@ -170,24 +171,23 @@ the stack is version-locked to the kdictate release.  See
    python3 install.py
    ```
 
-   If GPU mode is selected, the installer downloads only the Q8_0
-   GGML model (~874 MB) and configures the systemd service with
-   `--backend gpu`.  CPU mode downloads the CTranslate2 model
-   (~780 MB) and uses the default CPU backend.
+   The installer downloads the selected model: Whisper GPU (~874 MB),
+   Parakeet GPU (~669 MB), or Whisper CPU (~1.6 GB). It configures the
+   service with `--backend gpu`, `--backend parakeet`, or `--backend cpu`.
 
 > **Running from a source checkout?** The package isn't installed, so build
 > the same pinned whisper locally and point kdictate at it:
 >
 > ```bash
 > ./packaging/build-whisper.sh
-> export KDICTATE_WHISPER_CLI="$PWD/.whisper/build/bin/whisper-cli"
+> export KDICTATE_STT_WORKER="$PWD/.whisper/build/bin/kdictate-stt-worker"
 > ```
 
 See `docs/gpu-mode.md` for architecture details and benchmark results.
 
 ## Tuning
 
-- `--backend cpu|gpu`: transcription backend, fixed at install time (default: cpu; no runtime fallback).
+- `--backend cpu|gpu|parakeet`: transcription backend, fixed at install time (default: cpu; no runtime fallback).
 - `--cpu-threads N`: override thread count. Dictation-oriented defaults now use physical cores / short-form-friendly thread counts.
 - `--compute-type int8|float16|float32`: precision/runtime tradeoff.
 - `--language`: defaults to `en`.
@@ -219,5 +219,5 @@ See `docs/gpu-mode.md` for architecture details and benchmark results.
 
 ## Notes
 
-- CPU by default; optional GPU acceleration via Vulkan (no CUDA or ROCm required).
-- The model (`Systran/faster-whisper-large-v3-turbo`, ~780 MB) is downloaded automatically on first install to `~/.local/share/kdictate/whisper-large-v3-turbo-ct2/`. Subsequent installs skip the download if the directory exists.
+- The standalone daemon defaults to CPU; the installer defaults to Whisper GPU when available.
+- The selected model is downloaded to `~/.local/share/kdictate/`. Existing GPU models are reused after SHA-256 verification.
