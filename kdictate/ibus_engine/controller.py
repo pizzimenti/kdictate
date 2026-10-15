@@ -220,7 +220,17 @@ class DictationEngineController:
             self._hide_preedit(reason="final-deferred")
             return
 
-        self._logger.info("Committing final transcript through IBus (%d chars)", len(normalized))
+        # Log the full gate state alongside the commit: "committed but
+        # nothing typed" has already happened with every kdictate-side check
+        # green (2026-08-10, severed Wayland IM bridge), and this line is
+        # what proves the loss occurred beyond the engine.
+        self._logger.info(
+            "Committing final transcript through IBus (%d chars; enabled=%s focused=%s daemon_state=%s)",
+            len(normalized),
+            self._state.enabled,
+            self._state.focused,
+            self._state.daemon_state,
+        )
         # Commit first, THEN clear preedit.  On Wayland the IBus daemon
         # translates each engine call into a separate text-input-v3
         # batch.  If we clear preedit first, Chromium finalises the

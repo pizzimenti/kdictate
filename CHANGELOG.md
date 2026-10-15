@@ -1,5 +1,110 @@
 # Changelog
 
+## 0.18.0
+
+Root-causes and fixes the "every install breaks dictation until reboot"
+pattern that ran through 0.14–0.16, and adds the observability that would
+have made it a one-round diagnosis.
+
+(0.17.0 was abandoned unreleased: its live-repair used the wrong KWin
+trigger — a plain kwinrc write plus `/KWin reconfigure`, neither of which
+reaches KWin's input-method code — and a cross-model source review of KWin
+6.7.4 found two release blockers before any tag was cut. Everything below
+is the corrected line of work; pre-release 0.17.0 builds existed only on
+the development machine during live diagnosis.)
+
+### The KWin mechanism, as actually traced in source
+
+KWin watches kwinrc via **KConfigWatcher**, which fires only on *notified*
+writes (`kwriteconfig6 --notify` — the KConfig::Notify mechanism the
+Virtual Keyboard KCM uses). A notified `[Wayland] InputMethod` change calls
+`refreshSettings()` → `InputMethod::setInputMethodCommand()`: KWin stops
+the old process, creates a private Wayland connection, exports its FD as
+`WAYLAND_SOCKET`, and launches the desktop file's Exec. `/KWin reconfigure`
+never touches this path; writing an unchanged value is a no-op; and
+`/VirtualKeyboard` exposes no relaunch method (`available=true` merely
+means the command string is nonempty, not that the process is alive).
+
+### The root cause
+
+`refresh_ibus_registry` killed the session's ibus-daemon on every install,
+then toggled KWin's `org.kde.kwin.VirtualKeyboard.enabled` D-Bus property to
+make KWin respawn the input-method stack. Plasma 6.7 removed that property,
+so the toggle failed on every install — *after* the daemon was already dead —
+and the fallback started a bare `ibus-daemon -r -d` with **no Wayland IM
+bridge** (`ibus-ui-gtk3 --enable-wayland-im`). Diagnosed 2026-08-10 on the
+0.16.0 install: the daemon recorded/decoded/emitted, the engine received the
+transcript and committed it (all logged), yet `ss -xp` showed no compositor
+or application attached to the new daemon's socket. Committed text had
+nowhere to go. Only a relogin — which lets KWin respawn the bridge — restored
+typing, which is why every version "worked after reboot."
+
+### Fixed
+
+- **The installer never kills a healthy ibus-daemon.** Shipping new engine
+  code needs only `ibus write-cache` plus clearing old engine processes
+  (0.16.0's guard); IBus respawns engines on demand. The daemon kill and the
+  defunct property toggle are gone.
+- **Missing-bridge repair via KWin.** When the Wayland IM bridge is already
+  absent (the broken-session shape older installers left behind), the
+  installer relaunches the stack through the traced mechanism: a *notified*
+  delete of kwinrc `[Wayland] InputMethod` followed by a *notified* restore
+  (`kwriteconfig6 --notify`, with the restore guaranteed in a `finally`),
+  then verifies that the bridge **and** its `--exec-daemon` child both
+  appeared. Only daemons positively attributed to the current session are
+  cleared beforehand — unattributable processes are logged and left alone.
+- **Fail-closed dependency-cleanup snapshots.** The build-dep removal list
+  is the `pacman -Qq` diff around the install transaction; if *either*
+  snapshot is unavailable the cleanup claims nothing (a failed
+  before-snapshot with a successful after-snapshot would otherwise
+  classify the entire system as newly installed).
+- **`VirtualKeyboardMode` respected.** Plasma 6.7 reads the legacy
+  `VirtualKeyboardEnabled` bool only when the newer mode key is absent; a
+  user-set mode is now recorded and left alone instead of fought over.
+- **Preflight mirrors the PKGBUILD's full makedepends** — cmake, shaderc
+  (glslc), vulkan-headers, and the five Python build packages — so a clean
+  machine hears about everything up front instead of dying minutes into
+  the suppressed build.
+
+### Added
+
+- **Persistent install log** at `~/.local/state/kdictate/install.log`:
+  version transitions, every IBus process the installer touches (with PIDs),
+  bridge health decisions, repair outcomes, and the final self-check verdict.
+- **Post-install self-check.** The installer verifies the full chain —
+  daemon bus name, engine process, active engine, ibus-daemon, Wayland IM
+  bridge — and reports specific problems instead of printing an unconditional
+  success banner over a severed stack.
+- **Build dependencies are removed after a successful rebuild** (the
+  `makepkg --rmdeps` half, completing the hand-rolled `--syncdeps` from
+  0.14.1). The removal list is the exact `pacman -Qq` diff of the install
+  transaction — dependencies included, pre-existing packages out of reach
+  by construction — so in the normal case rebuilds no longer leave
+  `python-build`/`python-installer`/`python-wheel` behind as orphans. The
+  consent prompt announces the removal up front. Best-effort by design: if
+  pacman refuses the removal, the packages stay behind as `--asdeps`
+  orphans for the next sweep and `install.log` records why; a failed
+  cleanup never fails an otherwise-successful install. The preflight probe
+  now also checks `python-wheel`, aligning it with the PKGBUILD's
+  makedepends.
+- **Engine log identity.** Each engine instance logs under a numbered logger
+  (`…engine1`, `…engine2`), the process logs its PID at startup, and commits
+  log the enabled/focused/daemon-state gate they passed — so "committed but
+  nothing typed" is attributable to the correct instance and provably beyond
+  kdictate.
+
+### Changed
+
+- **The installer is flagless again.** The `--reconfigure` flag (introduced
+  during the 0.15 pre-release churn, never a settled design) is gone;
+  running the installer at the current version now *asks* "re-run
+  configuration to repair the KDE/IBus wiring? [y/N]" instead. Every
+  installer decision is either derived from system state or asked
+  interactively — repairing a broken install never requires knowing a flag
+  exists.
+
+The daemon runtime is otherwise unchanged from 0.16.0 (= 0.13.0 behaviour).
+
 ## 0.16.0
 
 Rolls the daemon back to its 0.13.0 behaviour. Everything in 0.14.0–0.14.2

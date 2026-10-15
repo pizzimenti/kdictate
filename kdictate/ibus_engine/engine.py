@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import logging
 from types import ModuleType
 from typing import Any
@@ -39,6 +40,15 @@ ENGINE_VERSION = APP_VERSION
 ENGINE_TEXTDOMAIN = TEXTDOMAIN
 LOGGER_NAME = "kdictate.ibus"
 
+# ibus-daemon creates a fresh engine instance per input context, and several
+# can be alive at once in one process (focus churn, panel probing). Their log
+# lines interleave in ibus-engine.log; without a per-instance identity it is
+# impossible to tell which instance committed, which was destroyed, or
+# whether "enabled" refers to the instance that later handles a transcript.
+# That ambiguity cost a multi-day diagnosis in 2026-08; hence a process-wide
+# sequence number baked into each instance's logger name.
+_ENGINE_INSTANCE_SEQ = itertools.count(1)
+
 
 def load_ibus_module() -> ModuleType:
     """Load the IBus typelib lazily so tests can import this package without it."""
@@ -73,7 +83,7 @@ def create_ibus_engine_class(ibus_module: ModuleType | None = None) -> type[Any]
 
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             super().__init__(*args, **kwargs)
-            self._logger = logger.getChild("engine")
+            self._logger = logger.getChild(f"engine{next(_ENGINE_INSTANCE_SEQ)}")
             self._adapter = IbusRenderAdapter(self, ibus)
             self._controller = DictationEngineController(self._adapter, self._logger)
             self._bridge = DaemonSignalBridge(self._controller, self._logger)
