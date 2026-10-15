@@ -15,7 +15,7 @@
 # so one package, compiled once, runs across Ryzen Zen 2 -> Zen 5.
 
 pkgname=kdictate
-pkgver=0.18.0
+pkgver=0.18.1
 pkgrel=1
 
 # The ONLY knob controlling the GPU transcription stack. Bump it
@@ -35,6 +35,7 @@ options=(!debug)
 depends=(
   'python'
   'python-gobject'
+  'libnotify'
   'ibus'
   'portaudio'
   'vulkan-icd-loader'

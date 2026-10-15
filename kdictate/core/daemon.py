@@ -125,9 +125,10 @@ class DictationDaemon:
         # Interactive session-limit prompt: returns True when the user
         # clicks Continue, False on timeout or dismissal. Tests inject
         # a deterministic stand-in.
-        self._session_prompt_fn = session_prompt_fn or self._prompt_session_continuation
+        self._session_prompt_fn = session_prompt_fn
         self._session_watchdog_lock = threading.Lock()
         self._session_watchdog_timer: threading.Timer | None = None
+        self._session_watchdog_cancel = threading.Event()
         self._session_prompt_thread: threading.Thread | None = None
         self._lock = threading.RLock()
         self._recording = False
@@ -294,7 +295,7 @@ class DictationDaemon:
         except OSError:
             pass
 
-    def _arm_session_watchdog(self) -> None:
+    def _arm_session_watchdog(self, expected_cancel: threading.Event | None = None) -> None:
         """Schedule the wall-clock prompt that asks the user to confirm a long session.
 
         Cancels any prior timer so re-arming after a "Continue" press starts
@@ -304,12 +305,22 @@ class DictationDaemon:
 
         duration = self.config.session_max_recording_s
         with self._session_watchdog_lock:
+            if self._shutting_down.is_set():
+                return
+            if expected_cancel is not None and (
+                expected_cancel is not self._session_watchdog_cancel
+                or expected_cancel.is_set()
+            ):
+                return
+            self._session_watchdog_cancel.set()
             if self._session_watchdog_timer is not None:
                 self._session_watchdog_timer.cancel()
                 self._session_watchdog_timer = None
             if duration <= 0:
                 return
-            timer = threading.Timer(duration, self._on_session_limit)
+            cancelled = threading.Event()
+            self._session_watchdog_cancel = cancelled
+            timer = threading.Timer(duration, self._on_session_limit, args=(cancelled,))
             timer.name = "kdictate-session-watchdog"
             timer.daemon = True
             self._session_watchdog_timer = timer
@@ -317,19 +328,20 @@ class DictationDaemon:
         self._logger.info("session watchdog armed for %.0fs", duration)
 
     def _cancel_session_watchdog(self) -> None:
-        """Cancel any pending session-limit timer."""
+        """Cancel the timer and retract any prompt belonging to it."""
 
         with self._session_watchdog_lock:
+            self._session_watchdog_cancel.set()
             timer = self._session_watchdog_timer
             self._session_watchdog_timer = None
         if timer is not None:
             timer.cancel()
 
-    def _on_session_limit(self) -> None:
+    def _on_session_limit(self, cancelled: threading.Event) -> None:
         """Wall-clock fired: prompt the user, auto-stop on no-response."""
 
         with self._lock:
-            if self._state != STATE_RECORDING:
+            if self._state != STATE_RECORDING or cancelled.is_set():
                 # User toggled off at the same instant the timer fired.
                 return
         self._logger.info(
@@ -339,41 +351,62 @@ class DictationDaemon:
 
         def _run() -> None:
             try:
-                continued = bool(
-                    self._session_prompt_fn(self.config.session_confirm_timeout_s)
-                )
+                timeout_s = self.config.session_confirm_timeout_s
+                if self._session_prompt_fn is None:
+                    continued = self._prompt_session_continuation(timeout_s, cancelled)
+                else:
+                    continued = bool(self._session_prompt_fn(timeout_s))
             except Exception:  # noqa: BLE001
                 self._logger.exception("session prompt failed; auto-stopping")
                 continued = False
             with self._lock:
                 still_recording = self._state == STATE_RECORDING
-            if not still_recording:
+            if cancelled.is_set() or not still_recording:
                 # User toggled off during the prompt window — nothing to do.
                 self._logger.info("session prompt resolved after toggle-off")
                 return
             if continued:
                 self._logger.info("session continued by user")
-                self._arm_session_watchdog()
+                self._arm_session_watchdog(expected_cancel=cancelled)
             else:
-                self._logger.info("session auto-stopped (no confirmation)")
-                self.request_stop()
+                def _stop_if_current() -> None:
+                    # Validate again on the control thread: a manual stop/start
+                    # may already be queued ahead of this expired prompt.
+                    with self._session_watchdog_lock:
+                        if (
+                            cancelled is not self._session_watchdog_cancel
+                            or cancelled.is_set()
+                            or self._shutting_down.is_set()
+                        ):
+                            return
+                    self._logger.info("session auto-stopped (no confirmation)")
+                    self._run_stop_session()
+
+                self._control_queue.put(_stop_if_current)
 
         thread = threading.Thread(
             target=_run,
             name="kdictate-session-prompt",
             daemon=True,
         )
-        self._session_prompt_thread = thread
-        thread.start()
+        with self._session_watchdog_lock:
+            if cancelled.is_set() or self._shutting_down.is_set():
+                return
+            self._session_prompt_thread = thread
+            thread.start()
 
-    def _prompt_session_continuation(self, timeout_s: float) -> bool:
+    def _prompt_session_continuation(self, timeout_s: float, cancelled: threading.Event) -> bool:
         """Default notify-send shell-out for the session-limit confirmation.
 
         Returns True iff the user clicked the Continue action within
         ``timeout_s`` seconds. Returns False on timeout, dismissal, or
-        when notify-send is unavailable.
+        when notify-send is unavailable. Critical notifications can ignore the
+        expiry time, and killing notify-send does not close its notification.
+        Capture the ID and explicitly retract it on every exit path.
         """
 
+        if cancelled.is_set():
+            return False
         notify_send = shutil.which("notify-send")
         if notify_send is None:
             self._logger.warning(
@@ -390,6 +423,8 @@ class DictationDaemon:
                     "--urgency=critical",
                     f"--expire-time={expire_ms}",
                     "--action=continue=Continue",
+                    "--print-id",
+                    "--transient",
                     "--wait",
                     "KDictate still recording",
                     f"Stopping in {int(timeout_s)}s — click Continue to keep going.",
@@ -400,16 +435,70 @@ class DictationDaemon:
         except OSError:
             self._logger.exception("failed to spawn notify-send for session prompt")
             return False
+        stdout = b""
+        started = time.monotonic()
+        deadline = started + timeout_s
+        creation_deadline = started + 2.0
         try:
-            stdout, _ = proc.communicate(timeout=timeout_s + 2.0)
-        except subprocess.TimeoutExpired:
-            proc.kill()
+            while True:
+                remaining = deadline - time.monotonic()
+                if cancelled.is_set() or remaining <= 0:
+                    if b"\n" in stdout:
+                        break
+                    # A stop can race with Notify itself. Allow a pending
+                    # reply to supply the ID before killing the helper, or
+                    # its newly created warning would be impossible to close.
+                    remaining = creation_deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                try:
+                    stdout, _ = proc.communicate(timeout=min(0.1, remaining))
+                    break
+                except subprocess.TimeoutExpired as exc:
+                    # communicate() preserves buffered output across retries,
+                    # including the ID printed before the user answers.
+                    stdout = exc.output or stdout
+        finally:
+            if proc.poll() is None:
+                proc.kill()
             try:
-                proc.communicate(timeout=1.0)
-            except subprocess.TimeoutExpired:
-                pass
-            return False
-        return stdout.strip() == b"continue"
+                stdout, _ = proc.communicate(timeout=1.0)
+            except subprocess.TimeoutExpired as exc:
+                stdout = exc.output or stdout
+                self._logger.warning("notify-send did not exit after being killed")
+            finally:
+                if proc.stdout is not None:
+                    proc.stdout.close()
+                lines = stdout.splitlines()
+                if lines and lines[0].isdigit() and int(lines[0]) > 0:
+                    self._close_session_notification(int(lines[0]))
+                else:
+                    self._logger.warning("notify-send did not report a notification ID")
+        return not cancelled.is_set() and b"continue" in stdout.splitlines()
+
+    def _close_session_notification(self, notification_id: int) -> None:
+        """Retract the warning even if the notification server kept it alive."""
+
+        gdbus = shutil.which("gdbus")
+        if gdbus is None:
+            self._logger.warning("gdbus unavailable; cannot close session notification")
+            return
+        try:
+            subprocess.run(
+                [
+                    gdbus, "call", "--session",
+                    "--dest", "org.freedesktop.Notifications",
+                    "--object-path", "/org/freedesktop/Notifications",
+                    "--method", "org.freedesktop.Notifications.CloseNotification",
+                    str(notification_id),
+                ],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=2.0,
+                check=True,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            self._logger.warning("failed to close session notification %d: %s", notification_id, exc)
 
     def _reset_session_buffers(self) -> None:
         """Clear transient queues and accumulated transcript fragments."""
@@ -1001,6 +1090,10 @@ class DictationDaemon:
         # finish observing the cleared _recording / _starting flags above.
         self._control_queue.put(None)
         self._control_thread.join(timeout=5.0)
+        prompt_thread = self._session_prompt_thread
+        if prompt_thread is not None:
+            # Finish notification cleanup even if the GLib loop has stopped.
+            prompt_thread.join(timeout=6.0)
         self._write_state(STATE_IDLE)
 
 
