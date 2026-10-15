@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.0.1 (2026-10-15)
+
+- Refresh Parakeet text previews about once per second during speech instead
+  of waiting for a silence boundary, ten seconds of speech, or Stop. Replace
+  draft hypotheses and commit only the completed transcript.
+- Keep only the latest pending preview when decoding falls behind, prioritize
+  completed audio and discard pending previews on Stop. Failed or empty draft
+  decodes do not discard the last useful preview or alter the final transcript.
+- List Parakeet GPU first and as the installer default, Whisper GPU second,
+  and Whisper CPU third. CPU-only installation remains available without Vulkan.
+- Add recording-to-controller regression coverage and a real GPU/D-Bus speech
+  replay check for preview-before-Stop, one final commit and model cleanup.
+
 ## 1.0.0 (2026-10-15)
 
 - Upgrade the private Vulkan speech stack from whisper.cpp 1.8.6 to 1.9.5.

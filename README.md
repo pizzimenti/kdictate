@@ -19,7 +19,7 @@ Two desktop components talk over session D-Bus:
 Choose Whisper large-v3-turbo on CPU or GPU, or Parakeet TDT 0.6B v3 on GPU.
 KDictate 1.0 keeps GPU models resident for faster responses,
 using the pinned whisper.cpp 1.9.5 stack with Vulkan (Q8_0).
-The installer detects GPU availability and prompts for one model; Whisper is
+The installer detects GPU availability and prompts for one model; Parakeet is
 the default. See [GPU options and benchmarks](docs/gpu-mode.md).
 
 > KWin Wayland + IBus is the supported configuration. On GNOME or other Wayland
@@ -171,9 +171,10 @@ the stack is version-locked to the kdictate release.  See
    python3 install.py
    ```
 
-   The installer downloads the selected model: Whisper GPU (~874 MB),
-   Parakeet GPU (~669 MB), or Whisper CPU (~1.6 GB). It configures the
-   service with `--backend gpu`, `--backend parakeet`, or `--backend cpu`.
+   The installer offers Parakeet GPU (~669 MB) first and as the default,
+   Whisper GPU (~874 MB) second, and Whisper CPU (~1.6 GB) third. It downloads
+   the selected model and configures the service with `--backend parakeet`,
+   `--backend gpu`, or `--backend cpu`.
 
 > **Running from a source checkout?** The package isn't installed, so build
 > the same pinned whisper locally and point kdictate at it:
@@ -201,6 +202,9 @@ See `docs/gpu-mode.md` for architecture details and benchmark results.
 - `--task transcribe|translate`: keep original language vs force English output (CLI mode only).
 - `--decode-workers`, `--diag`, `--diag-interval-s`: parallelism and diagnostics (CLI mode only).
 - Runtime control/VAD polling now uses 150ms wait intervals to reduce idle wakeups without materially affecting dictation latency.
+- Parakeet refreshes the IBus text preview about once per second while speaking.
+  Drafts can change as more audio arrives; only the completed utterance contributes
+  to the text committed on Stop. Whisper previews continue to update at utterance boundaries.
 
 ## Files
 
@@ -219,5 +223,5 @@ See `docs/gpu-mode.md` for architecture details and benchmark results.
 
 ## Notes
 
-- The standalone daemon defaults to CPU; the installer defaults to Whisper GPU when available.
+- The standalone daemon defaults to CPU; the installer defaults to Parakeet GPU when available.
 - The selected model is downloaded to `~/.local/share/kdictate/`. Existing GPU models are reused after SHA-256 verification.

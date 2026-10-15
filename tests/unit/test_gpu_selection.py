@@ -18,7 +18,7 @@ def ctx(tmp_path):
                                   home=tmp_path, runtime_dir=tmp_path/'runtime', backend='parakeet')
 
 
-@pytest.mark.parametrize('choice,expected', [('', 'gpu'), ('1', 'gpu'), ('2', 'cpu'), ('3', 'parakeet')])
+@pytest.mark.parametrize('choice,expected', [('', 'parakeet'), ('1', 'parakeet'), ('2', 'gpu'), ('3', 'cpu')])
 def test_installer_selects_one_backend(choice, expected):
     with mock.patch.object(install, '_detect_gpu', return_value=('/test/worker', [])), mock.patch('builtins.input', return_value=choice):
         assert install._prompt_backend() == expected

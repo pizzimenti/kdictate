@@ -20,6 +20,7 @@ from gi.repository import GLib
 from kdictate.audio_common import (
     AUDIO_QUEUE_MAXSIZE,
     UTTERANCE_QUEUE_MAXSIZE,
+    AudioUtterance,
     VADConfig,
     VADSegmenter,
     load_whisper_model,
@@ -139,6 +140,7 @@ class DictationDaemon:
         self._streamed_text: list[str] = []
         self._audio_queue: queue.Queue[Any] = queue.Queue(maxsize=AUDIO_QUEUE_MAXSIZE)
         self._utterance_queue: queue.Queue[Any] = queue.Queue(maxsize=UTTERANCE_QUEUE_MAXSIZE)
+        self._preview_queue: queue.Queue[AudioUtterance] = queue.Queue(maxsize=1)
         self._stop_vad = threading.Event()
         self._cancel_start = threading.Event()
         self._pending_start = threading.Event()
@@ -513,6 +515,11 @@ class DictationDaemon:
                 self._utterance_queue.get_nowait()
             except queue.Empty:
                 break
+        while not self._preview_queue.empty():
+            try:
+                self._preview_queue.get_nowait()
+            except queue.Empty:
+                break
         self._streamed_text = []
         self._pending_start.clear()
 
@@ -525,6 +532,14 @@ class DictationDaemon:
             self._streamed_text.append(text)
             cumulative = " ".join(self._streamed_text).strip()
         self._logger.info("partial transcript emitted (%d chars)", len(cumulative))
+        self._event_sink.partial_transcript(cumulative)
+
+    def _publish_preview(self, text: str) -> None:
+        """Replace the current draft without adding it to the final transcript."""
+
+        with self._lock:
+            cumulative = " ".join([*self._streamed_text, text]).strip()
+        self._logger.info("preview transcript emitted (%d chars)", len(cumulative))
         self._event_sink.partial_transcript(cumulative)
 
     def _finalize_text(self) -> str:
@@ -644,10 +659,12 @@ class DictationDaemon:
                 min_speech_ms=self.config.min_speech_ms,
                 start_speech_ms=self.config.start_speech_ms,
                 max_utterance_s=self.config.max_utterance_s,
+                preview_interval_s=1.0 if self.config.backend == "parakeet" else 0.0,
             ),
             audio_queue=self._audio_queue,
             utterance_queue=self._utterance_queue,
             stop_event=self._stop_vad,
+            preview_queue=self._preview_queue,
         )
         vad.run()
 
@@ -662,7 +679,9 @@ class DictationDaemon:
         # _record_partial_text and _emit_error.
         session_generation = self._session_generation
         utterance_queue = self._utterance_queue
+        preview_queue = self._preview_queue
         stop_vad = self._stop_vad
+        last_final_utterance_id = -1
 
         while True:
             # Generation mismatch means the daemon has rotated the
@@ -678,7 +697,7 @@ class DictationDaemon:
                 return
 
             try:
-                item = utterance_queue.get(timeout=1.0)
+                item = utterance_queue.get(timeout=0.15 if self.config.backend == "parakeet" else 1.0)
             except queue.Empty:
                 # Defensive exit: if a stop has been requested and the VAD
                 # worker is no longer alive, the sentinel will never arrive
@@ -692,10 +711,16 @@ class DictationDaemon:
                             "(vad worker not alive after stop)"
                         )
                         break
-                continue
+                try:
+                    item = preview_queue.get_nowait()
+                except queue.Empty:
+                    continue
             if item is None:
                 break
-            pcm_chunks, audio_seconds = item
+            if not item.is_final and (
+                    stop_vad.is_set() or item.utterance_id <= last_final_utterance_id):
+                continue
+            pcm_chunks, audio_seconds = item.pcm_chunks, item.audio_seconds
             pending = utterance_queue.qsize()
             if audio_seconds < 0.3:
                 self._logger.info(
@@ -714,19 +739,31 @@ class DictationDaemon:
                         "decode worker dropping post-transcribe text after session rotation"
                     )
                     return
+                if not item.is_final and stop_vad.is_set():
+                    continue
                 self._logger.info(
                     "decode %.1fs audio in %.1fs (%.2fx RT, %d queued) -> %d chars",
                     audio_seconds, decode_s, decode_s / max(audio_seconds, 0.01), pending,
                     len(text),
                 )
-                if text:
-                    self._record_partial_text(text)
+                if item.is_final:
+                    last_final_utterance_id = item.utterance_id
+                    if text:
+                        self._record_partial_text(text)
+                    else:
+                        self._publish_preview("")
+                elif text:
+                    self._publish_preview(text)
             except Exception as exc:  # noqa: BLE001
                 if self._session_generation != session_generation:
                     # Don't surface a stale-session transcription error
                     # into the new session.
                     return
                 error = TranscriptionError(str(exc))
+                if not item.is_final:
+                    self._logger.warning("preview decode failed: %s", error)
+                    continue
+                self._publish_preview("")
                 self._emit_error("transcription_failed", str(error))
                 self._logger.exception("decode worker failed")
 
@@ -962,6 +999,7 @@ class DictationDaemon:
             with self._lock:
                 self._audio_queue = queue.Queue(maxsize=AUDIO_QUEUE_MAXSIZE)
                 self._utterance_queue = queue.Queue(maxsize=UTTERANCE_QUEUE_MAXSIZE)
+                self._preview_queue = queue.Queue(maxsize=1)
                 self._stop_vad = threading.Event()
                 self._session_generation += 1
 

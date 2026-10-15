@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 import kdictate.core.daemon as daemon_module
 from kdictate.config import DictationConfig
+from kdictate.audio_common import AudioUtterance
 from kdictate.constants import STATE_ERROR, STATE_IDLE, STATE_RECORDING, STATE_STARTING, STATE_TRANSCRIBING
 from kdictate.core.daemon import DictationDaemon
 from kdictate.runtime import RuntimePaths, read_last_text, read_state
@@ -452,7 +453,7 @@ class DictationDaemonTest(unittest.TestCase):
 
                 # Put one item to transcribe + a sentinel to exit cleanly
                 # if the generation check ever fails to fire.
-                daemon._utterance_queue.put((["dummy_pcm"], 1.0))
+                daemon._utterance_queue.put(AudioUtterance(["dummy_pcm"], 1.0, 0))
                 daemon._utterance_queue.put(None)
 
                 # Run _decode_worker synchronously in the test thread.

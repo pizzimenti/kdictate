@@ -1,14 +1,14 @@
 # KDictate GPU mode (1.0)
 
-Choose Whisper GPU, Whisper CPU, or Parakeet GPU in `python3 install.py`.
-Whisper remains the installer default when Vulkan is available. The installer
+Choose Parakeet GPU, Whisper GPU, or Whisper CPU in `python3 install.py`.
+Parakeet is the installer default when Vulkan is available. The installer
 provisions the selected model and pins the service to that choice. Existing
 `--backend gpu` configurations continue to mean Whisper.
 
 | Choice | CLI flag | Model | Download |
 | --- | --- | --- | --- |
-| Whisper GPU | `--backend gpu` | Whisper large-v3-turbo Q8_0 | 874 MB |
 | Parakeet GPU | `--backend parakeet` | Parakeet TDT 0.6B v3 Q8_0 | 669 MB |
+| Whisper GPU | `--backend gpu` | Whisper large-v3-turbo Q8_0 | 874 MB |
 | Whisper CPU | `--backend cpu` | Whisper large-v3-turbo CTranslate2 int8 | about 1.6 GB |
 
 Parakeet v3 recognizes supported languages automatically; Whisper accepts
@@ -119,3 +119,28 @@ The optional daemon smoke check runs under `dbus-run-session` with a 30-second
 external timeout, `--engine whisper|parakeet`, `--worker`, `--model`, and
 `--output-dir`. It exercises real model readiness, D-Bus service startup and
 worker reaping without opening the microphone or using the desktop session bus.
+
+`tests/integration/test_recording_preview.py` feeds PCM through the capture
+callback, VAD, decode worker, service events and IBus controller. Its model and
+audio device are test doubles; it verifies preview before Stop, draft revision,
+final text without duplication, silence boundaries and slow/failed decoding.
+
+For real Parakeet inference and D-Bus transport, replay a prepared human speech
+clip with the separate preview check:
+
+```sh
+timeout --kill-after=5 35s dbus-run-session -- .venv/bin/python benchmarks/smoke_preview.py \
+  --worker /usr/lib/kdictate/bin/kdictate-stt-worker \
+  --model "$HOME/.local/share/kdictate/ggml-parakeet-tdt-0.6b-v3-q8_0.bin" \
+  --audio "$HOME/.cache/kdictate-benchmarks/audio/clean-6930-75918-0000.wav" \
+  --expected-text 'Concord returned to its place amidst the tents,' \
+  --output-dir "$HOME/.cache/kdictate-benchmarks/preview-smoke"
+```
+
+This checks for a nonempty preedit while still recording, then exactly one final
+commit on Stop, model reuse and worker cleanup. The default zero energy threshold
+deliberately prevents silence-triggered decoding to reproduce continuous speech
+or a noisy microphone. It replaces the audio device and IBus rendering surface;
+desktop application rendering still needs a manual check. Use
+`--source-root /path/to/checkout --no-expect-preview` to confirm the missing
+preview on the 1.0.0 source, without installing it or changing the running service.

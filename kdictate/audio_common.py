@@ -156,6 +156,7 @@ class VADConfig:
     min_speech_ms: int = 120
     start_speech_ms: int = 90
     max_utterance_s: float = 10.0
+    preview_interval_s: float = 0.0
 
     @property
     def silence_blocks(self) -> int:
@@ -174,6 +175,16 @@ class VADConfig:
         return max(1, int((self.max_utterance_s * 1000.0) / self.block_ms))
 
 
+@dataclass(frozen=True, slots=True)
+class AudioUtterance:
+    """An utterance snapshot, or its completed audio for final decoding."""
+
+    pcm_chunks: list[Any]
+    audio_seconds: float
+    utterance_id: int
+    is_final: bool = True
+
+
 class VADSegmenter:
     """Energy-based voice activity detector that segments audio into utterances.
 
@@ -181,8 +192,9 @@ class VADSegmenter:
     chunk lists to ``utterance_queue``. Runs until ``stop_event`` is set, then
     flushes any in-progress utterance before posting a ``None`` sentinel.
 
-    The utterance queue items are ``(pcm_chunks, audio_seconds)`` tuples, or
-    ``None`` as the stop sentinel.
+    The utterance queue contains completed ``AudioUtterance`` items and a
+    ``None`` stop sentinel. Optional previews use a separate one-item queue;
+    a slow decoder sees the latest snapshot without delaying final audio.
     """
 
     def __init__(
@@ -191,11 +203,13 @@ class VADSegmenter:
         audio_queue: queue.Queue,
         utterance_queue: queue.Queue,
         stop_event: threading.Event,
+        preview_queue: queue.Queue | None = None,
     ) -> None:
         self.config = config
         self.audio_queue = audio_queue
         self.utterance_queue = utterance_queue
         self.stop_event = stop_event
+        self.preview_queue = preview_queue
 
     def run(self) -> None:
         """Block until stop_event is set, segmenting audio the whole time."""
@@ -206,6 +220,9 @@ class VADSegmenter:
         min_speech_blocks = cfg.min_speech_blocks
         start_speech_blocks = cfg.start_speech_blocks
         max_utterance_blocks = cfg.max_utterance_blocks
+        preview_blocks = max(1, int(cfg.preview_interval_s * 1000 / cfg.block_ms))
+        next_preview_block = preview_blocks
+        utterance_id = 0
 
         logger.info(
             "vad config: energy_threshold=%.0f, start_speech_blocks=%d, "
@@ -232,6 +249,13 @@ class VADSegmenter:
             nonlocal in_speech, speech_block_count, pending_speech_block_count
             nonlocal trailing_silence_count, utterance_pcm, pending_speech_pcm, pending_silence_pcm
             nonlocal commits
+            nonlocal utterance_id, next_preview_block
+            # Final audio supersedes any queued draft of this utterance.
+            if self.preview_queue is not None:
+                try:
+                    self.preview_queue.get_nowait()
+                except queue.Empty:
+                    pass
             if speech_block_count >= min_speech_blocks and utterance_pcm:
                 audio_seconds = sum(len(c) for c in utterance_pcm) / float(cfg.sample_rate)
                 avg_rms = float(np.sqrt(np.mean(
@@ -239,7 +263,9 @@ class VADSegmenter:
                 )))
                 pending = self.utterance_queue.qsize()
                 try:
-                    self.utterance_queue.put_nowait((list(utterance_pcm), audio_seconds))
+                    self.utterance_queue.put_nowait(
+                        AudioUtterance(list(utterance_pcm), audio_seconds, utterance_id)
+                    )
                     commits += 1
                     logger.info(
                         "utterance committed: %.1fs audio, %d blocks, %d queued, avg_rms=%.0f",
@@ -254,6 +280,8 @@ class VADSegmenter:
             utterance_pcm.clear()
             pending_speech_pcm.clear()
             pending_silence_pcm.clear()
+            utterance_id += 1
+            next_preview_block = preview_blocks
 
         try:
             while not self.stop_event.is_set():
@@ -307,6 +335,23 @@ class VADSegmenter:
 
                 if in_speech and trailing_silence_count >= silence_blocks:
                     commit()
+                    continue
+
+                if (self.preview_queue is not None and cfg.preview_interval_s > 0
+                        and in_speech and speech_block_count >= min_speech_blocks
+                        and len(utterance_pcm) >= next_preview_block):
+                    snapshot = AudioUtterance(
+                        list(utterance_pcm),
+                        sum(len(c) for c in utterance_pcm) / float(cfg.sample_rate),
+                        utterance_id,
+                        is_final=False,
+                    )
+                    try:
+                        self.preview_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    self.preview_queue.put_nowait(snapshot)
+                    next_preview_block = len(utterance_pcm) + preview_blocks
 
             # Flush any in-progress utterance when recording stops
             if in_speech and speech_block_count >= min_speech_blocks and utterance_pcm:

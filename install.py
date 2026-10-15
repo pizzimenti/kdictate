@@ -248,23 +248,23 @@ def _detect_gpu() -> tuple[str | None, list[str]]:
 
 
 def _prompt_backend() -> str:
-    """Ask for exactly one model; keep Whisper as the default."""
+    """Ask for exactly one model; default to Parakeet when a GPU is available."""
     _, reasons = _detect_gpu()
 
     try:
         if not reasons:
             print("  GPU acceleration is available:\n")
-            print("    [1] Whisper GPU  (large-v3-turbo, default, 874 MB)")
-            print("    [2] Whisper CPU  (no GPU required, about 1.6 GB)")
-            print("    [3] Parakeet GPU (TDT 0.6B v3, 669 MB)\n")
+            print("    [1] Parakeet GPU (TDT 0.6B v3, default, 669 MB)")
+            print("    [2] Whisper GPU  (large-v3-turbo, 874 MB)")
+            print("    [3] Whisper CPU  (no GPU required, about 1.6 GB)\n")
             while True:
                 choice = input("  Select [1/2/3] (default: 1): ").strip()
                 if choice in ("", "1"):
-                    return "gpu"
-                if choice == "2":
-                    return "cpu"
-                if choice == "3":
                     return "parakeet"
+                if choice == "2":
+                    return "gpu"
+                if choice == "3":
+                    return "cpu"
         else:
             print("  GPU acceleration is not available:\n")
             for reason in reasons:
