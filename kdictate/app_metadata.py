@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Final
 
-APP_VERSION: Final[str] = "0.18.1"
+APP_VERSION: Final[str] = "1.0.0"
 DISPLAY_NAME: Final[str] = "KDictate"
 APP_AUTHOR: Final[str] = "Bradley Pizzimenti"
 APP_HOMEPAGE: Final[str] = "https://github.com/pizzimenti/kdictate"
@@ -24,7 +24,15 @@ PROJECT_ROOT: Final[Path] = Path(__file__).resolve().parent.parent
 DEFAULT_MODEL_DIR: Final[Path] = PROJECT_ROOT / DEFAULT_MODEL_NAME
 
 GGML_MODEL_HF_REPO: Final[str] = "ggerganov/whisper.cpp"
+GGML_MODEL_REVISION: Final[str] = "5359861c739e955e79d9a303bcbc70fb988958b1"
 GGML_MODEL_FILENAME: Final[str] = "ggml-large-v3-turbo-q8_0.bin"
 GGML_MODEL_PATH: Final[Path] = (
     Path.home() / ".local" / "share" / "kdictate" / GGML_MODEL_FILENAME
 )
+GGML_MODEL_SHA256: Final[str] = "317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1"
+
+PARAKEET_MODEL_HF_REPO: Final[str] = "ggml-org/parakeet-GGUF"
+PARAKEET_MODEL_REVISION: Final[str] = "35156454d1a39de06863303dd209fd2bed6ee079"
+PARAKEET_MODEL_FILENAME: Final[str] = "ggml-parakeet-tdt-0.6b-v3-q8_0.bin"
+PARAKEET_MODEL_SHA256: Final[str] = "4d64e9e96c2792186d072fde0034df0ad670cf680a2f53069052ead827fd600e"
+PARAKEET_MODEL_PATH: Final[Path] = GGML_MODEL_PATH.parent / PARAKEET_MODEL_FILENAME

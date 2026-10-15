@@ -1,0 +1,8 @@
+{
+  "engine": "whisper",
+  "worker_pid": 512293,
+  "load_seconds": 1.473634010006208,
+  "daemon_ready": true,
+  "worker_reaped": true,
+  "exit_code": 0
+}

@@ -1,0 +1,64 @@
+{
+  "version": "1.0.0rc1",
+  "target_release": "1.0.0",
+  "branch": "stack-updates",
+  "base_commit": "c60a986b2f37dc20a238646226c739afb3810c88",
+  "package": "kdictate-1.0.0rc1-1-x86_64.pkg.tar.zst",
+  "package_sha256": "9b1f00760c62e76f6ee0722a9833baa84d454e904eb6d07d398e075a905211c4",
+  "whisper_cpp": "1.9.5",
+  "whisper_source_sha256": "ff1a9053feb509ff9d7729703355541ae9690073a6b1c40eb692c962e0dc1720",
+  "baseline_package": "kdictate 0.18.1-1",
+  "python_dependencies": {
+    "faster-whisper": "1.2.1",
+    "tokenizers": "0.23.3",
+    "huggingface_hub": "0.36.2",
+    "sounddevice": "0.5.6",
+    "cffi": "2.1.1",
+    "ctranslate2": "4.8.3",
+    "onnxruntime": "1.31.0",
+    "requests": "2.34.2",
+    "av": "19.0.1",
+    "certifi": "2026.7.22",
+    "charset-normalizer": "3.5.2",
+    "filelock": "4.2.0",
+    "fsspec": "2026.9.0",
+    "hf-xet": "1.7.0",
+    "idna": "3.20",
+    "numpy": "2.5.4",
+    "packaging": "26.3",
+    "protobuf": "7.36.2",
+    "psutil": "6.1.1",
+    "pycparser": "3.11",
+    "PyYAML": "6.0.3",
+    "tqdm": "4.70.1",
+    "typing_extensions": "4.16.0",
+    "urllib3": "2.8.0",
+    "flatbuffers": "25.12.19"
+  },
+  "validation": {
+    "unit_tests": 259,
+    "subtests": 26,
+    "warning": "Existing GLib.unix_signal_add_full deprecation",
+    "speech_clips": 60,
+    "silence_clips": 2,
+    "decode_failures": 0,
+    "isolated_daemon_smoke": {
+      "whisper": {
+        "engine": "whisper",
+        "worker_pid": 512293,
+        "load_seconds": 1.473634010006208,
+        "daemon_ready": true,
+        "worker_reaped": true,
+        "exit_code": 0
+      },
+      "parakeet": {
+        "engine": "parakeet",
+        "worker_pid": 512757,
+        "load_seconds": 2.167926322988933,
+        "daemon_ready": true,
+        "worker_reaped": true,
+        "exit_code": 0
+      }
+    }
+  }
+}

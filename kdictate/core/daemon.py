@@ -1094,6 +1094,9 @@ class DictationDaemon:
         if prompt_thread is not None:
             # Finish notification cleanup even if the GLib loop has stopped.
             prompt_thread.join(timeout=6.0)
+        close_backend = getattr(self._backend, "close", None)
+        if callable(close_backend):
+            close_backend()
         self._write_state(STATE_IDLE)
 
 
@@ -1136,14 +1139,14 @@ def main(argv: list[str] | None = None) -> int:
 
     # Backend is fixed at install time -- gpu (or fail) / cpu, never both,
     # no silent runtime fallback (the other backend's model isn't provisioned).
-    if backend_name == "gpu":
+    if backend_name in ("gpu", "parakeet"):
         from kdictate.backend import create_gpu_backend
         gpu = create_gpu_backend(config)
         if gpu is None:
             logger.error("GPU backend requested but unavailable")
             return 1
         backend = gpu
-        logger.info("using GPU backend (whisper.cpp + Vulkan)")
+        logger.info("using resident GPU backend (%s + Vulkan)", gpu.engine)
     else:
         try:
             model, runtime = load_model(config)
@@ -1165,6 +1168,7 @@ def main(argv: list[str] | None = None) -> int:
         from kdictate.service.dbus_service import SessionDbusService
     except Exception as exc:  # noqa: BLE001
         logger.error("failed to import session service: %s", exc)
+        daemon.shutdown()
         return 1
 
     service = SessionDbusService(daemon, logger=get_propagating_child(base_logger, "dbus"))

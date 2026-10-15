@@ -1,0 +1,486 @@
+<!doctype html><html lang="en"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KDictate 1.0 speech comparison</title><style>
+body{font:16px/1.5 system-ui,sans-serif;max-width:1200px;margin:36px auto;padding:0 20px;color:#183040;background:#fafcfd}
+h1,h2{line-height:1.2} table{border-collapse:collapse;width:100%;margin:20px 0;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:10px;border-bottom:1px solid #cbd5df;vertical-align:top} th{background:#e9f1f6}
+.scroll{overflow-x:auto} .note{background:#edf3f6;padding:16px;border-radius:8px} details{margin:12px 0;border:1px solid #ccd7df;border-radius:6px;padding:12px}
+summary{cursor:pointer;font-weight:600} code{overflow-wrap:anywhere;font-size:13px} input{font:inherit;padding:10px;width:min(95%,600px)}
+.bad{color:#a62d23} .good{color:#17633f} footer{font-size:14px;color:#4a5d69} a{color:#17609a}
+</style><h1>KDictate 1.0 release candidate: speech comparison</h1>
+<p>60 human speech clips, 57 speakers, 6.9 minutes, 1,080 reference words; two additional digital-silence checks. Host: AMD Ryzen 5 8640HS w/ Radeon 760M Graphics.</p><pre>deviceName         = AMD Radeon 760M Graphics (RADV PHOENIX)
+driverName         = radv
+driverInfo         = Mesa 26.2.2-arch1.1</pre>
+<p class="note">Lower WER and lower latency are better. CLI timing includes a fresh process and model load for each clip. Resident timing follows startup and one second of warmup silence. These measurements exclude microphone capture, silence detection and desktop insertion. OS file caches are warm; the installed dictation service was left unchanged.</p>
+<p>Measurements were taken in an active desktop session with other processes running. Run-start and run-end load snapshots are retained in each raw JSON file.</p>
+<h2>Accuracy and response time</h2><div class="scroll"><table><tr><th>Configuration</th><th>WER, clean</th><th>WER, harder</th><th>WER, all</th><th>Median decode</th><th>p95 decode</th><th>≤10s clips median</th><th>Real-time factor</th><th>Failures</th></tr>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>1.81%</td><td>4.08%</td><td>2.69%</td><td>2.204s</td><td>2.853s</td><td>2.140s</td><td>0.334</td><td>0</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>1.81%</td><td>3.84%</td><td>2.59%</td><td>2.358s</td><td>2.638s</td><td>2.341s</td><td>0.348</td><td>0</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.81%</td><td>3.84%</td><td>2.59%</td><td>1.749s</td><td>2.033s</td><td>1.724s</td><td>0.259</td><td>0</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.96%</td><td>4.56%</td><td>2.96%</td><td>1.159s</td><td>1.398s</td><td>1.139s</td><td>0.172</td><td>0</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>1.96%</td><td>4.56%</td><td>2.96%</td><td>0.166s</td><td>0.402s</td><td>0.133s</td><td>0.029</td><td>0</td></tr>
+</table></div><p>WER is total word edits / total reference words; lowercase and punctuation normalization only. Numbers and contractions remain literal. Failed requests count as empty hypotheses. A real-time factor of 0.1 means one second of processing per ten seconds of audio.</p>
+<p class="note">Parakeet is a viable option on this host: median resident decode 0.166s, versus 1.749s for resident Whisper. It made 4 more word errors than updated Whisper in this subset. Whisper remains the installer default; Parakeet is offered as an optional choice pending validation with your microphone.</p>
+<p>Whisper: CLI and resident transcripts matched exactly on all 62 clips.</p>
+<p>Parakeet: CLI and resident transcripts matched exactly on all 62 clips.</p>
+<h2>Startup and retained memory</h2><table><tr><th>Configuration</th><th>Model load</th><th>Warmup</th><th>Idle RSS</th><th>Peak RSS</th><th>Silence with text</th></tr>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>in each decode</td><td>in each decode</td><td>process exits</td><td>124 MiB</td><td>0/2</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>in each decode</td><td>in each decode</td><td>process exits</td><td>122 MiB</td><td>0/2</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>0.478s</td><td>1.535s</td><td>82 MiB</td><td>122 MiB</td><td>0/2</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>in each decode</td><td>in each decode</td><td>process exits</td><td>78 MiB</td><td>0/2</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.923s</td><td>0.094s</td><td>59 MiB</td><td>86 MiB</td><td>0/2</td></tr>
+</table><p>RSS is Linux process memory, not a complete GPU allocation measure. Shared memory and device memory accounting vary. A resident model keeps these allocations while idle until the daemon stops.</p>
+<h2>Idle response and timing cross-check</h2><p>Eight short clips were tested again with old/new CLI order alternating between clips. The median per-clip new/old timing ratio was 0.976 (1.0 means equal speed). This cross-check helps separate engine changes from changing desktop load.</p><table><tr><th>Resident engine</th><th>Immediately</th><th>After 10s idle</th><th>After 30s idle</th><th>GPU allocations retained</th></tr>
+<tr><td>whisper</td><td>1.845s</td><td>1.803s</td><td>1.910s</td><td>1184 MiB</td></tr>
+<tr><td>parakeet</td><td>0.135s</td><td>0.129s</td><td>0.134s</td><td>790 MiB</td></tr>
+</table><p>The idle test repeats one short clip after warmup and the corpus's longest clip. GPU figures come from per-client Linux DRM VRAM + GTT allocation counters, with duplicate file descriptors excluded. On this integrated GPU these allocations consume shared system memory; RSS should not be added blindly because driver mappings can overlap. <a href="responsiveness.json">Full timing cross-check, idle transcripts and raw memory counters</a>.</p>
+<h2>Accuracy uncertainty</h2><p>Differences against the first configuration, in percentage points of WER (negative means fewer errors). The interval is a paired, speaker-cluster bootstrap (3,000 draws). This small audiobook subset cannot establish accuracy for your microphone or all dictation tasks.</p><ul>
+<li>Whisper 1.9.5 CLI: -0.09 points; 95% interval [-0.32, +0.00].</li>
+<li>Whisper 1.9.5 resident: -0.09 points; 95% interval [-0.32, +0.00].</li>
+<li>Parakeet v3 Q8 CLI: +0.28 points; 95% interval [-0.59, +1.14].</li>
+<li>Parakeet v3 Q8 resident: +0.28 points; 95% interval [-0.59, +1.14].</li>
+</ul>
+<h2>Inspect every transcript</h2><p>Search by clip ID, reference text or recognized text.</p><input id="search" type="search" placeholder="Filter clips…" aria-label="Filter clips"><div id="clips">
+<details><summary>clean-6930-75918-0000 · 3.50s</summary><p><b>Reference:</b> CONCORD RETURNED TO ITS PLACE AMIDST THE TENTS</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.963s</td><td>0 edits</td><td>Concord returned to its place amidst the tents.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.399s</td><td>0 edits</td><td>Concord returned to its place amidst the tents.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.549s</td><td>0 edits</td><td>Concord returned to its place amidst the tents.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.092s</td><td>0 edits</td><td>Concord returned to its place amidst the tents,</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.188s</td><td>0 edits</td><td>Concord returned to its place amidst the tents,</td></tr>
+</table></details>
+<details><summary>clean-1320-122617-0012 · 7.59s</summary><p><b>Reference:</b> FOUR OR FIVE OF THE LATTER ONLY LINGERED ABOUT THE DOOR OF THE PRISON OF UNCAS WARY BUT CLOSE OBSERVERS OF THE MANNER OF THEIR CAPTIVE</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.853s</td><td>0 edits</td><td>four or five of the latter only lingered about the door of the prison of uncas wary but close observers of the manner of their captive</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.341s</td><td>0 edits</td><td>four or five of the latter only lingered about the door of the prison of uncas wary but close observers of the manner of their captive</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.724s</td><td>0 edits</td><td>four or five of the latter only lingered about the door of the prison of uncas wary but close observers of the manner of their captive</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.154s</td><td>0 edits</td><td>Four or five of the latter only lingered about the door of the prison of Uncas, wary but close observers of the manner of their captive.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.226s</td><td>0 edits</td><td>Four or five of the latter only lingered about the door of the prison of Uncas, wary but close observers of the manner of their captive.</td></tr>
+</table></details>
+<details><summary>clean-260-123440-0002 · 14.71s</summary><p><b>Reference:</b> IT WAS THE WHITE RABBIT RETURNING SPLENDIDLY DRESSED WITH A PAIR OF WHITE KID GLOVES IN ONE HAND AND A LARGE FAN IN THE OTHER HE CAME TROTTING ALONG IN A GREAT HURRY MUTTERING TO HIMSELF AS HE CAME OH THE DUCHESS THE DUCHESS</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>3.176s</td><td>0 edits</td><td>it was the white rabbit returning splendidly dressed with a pair of white kid gloves in one hand and a large fan in the other he came trotting along in a great hurry muttering to himself as he came oh the duchess the duchess</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.563s</td><td>0 edits</td><td>it was the white rabbit returning splendidly dressed with a pair of white kid gloves in one hand and a large fan in the other he came trotting along in a great hurry muttering to himself as he came oh the duchess the duchess</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.852s</td><td>0 edits</td><td>it was the white rabbit returning splendidly dressed with a pair of white kid gloves in one hand and a large fan in the other he came trotting along in a great hurry muttering to himself as he came oh the duchess the duchess</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.340s</td><td>0 edits</td><td>It was the white rabbit returning, splendidly dressed with a pair of white kid gloves in one hand and a large fan in the other. He came trotting along in a great hurry, muttering to himself as he came. Oh, the Duchess the Duchess</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.391s</td><td>0 edits</td><td>It was the white rabbit returning, splendidly dressed with a pair of white kid gloves in one hand and a large fan in the other. He came trotting along in a great hurry, muttering to himself as he came. Oh, the Duchess the Duchess</td></tr>
+</table></details>
+<details><summary>clean-7729-102255-0010 · 8.54s</summary><p><b>Reference:</b> OF THE LYNCHINGS THE MOBS AND THE MURDERS IT WOULD BE IMPOSSIBLE EXCEPT IN A VERY EXTENDED WORK TO NOTE THE FREQUENT AND ATROCIOUS DETAILS</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.791s</td><td>0 edits</td><td>of the lynchings the mobs and the murders it would be impossible except in a very extended work to note the frequent and atrocious details</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.371s</td><td>0 edits</td><td>of the lynchings the mobs and the murders it would be impossible except in a very extended work to note the frequent and atrocious details</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.558s</td><td>0 edits</td><td>of the lynchings the mobs and the murders it would be impossible except in a very extended work to note the frequent and atrocious details</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.197s</td><td>1 edits</td><td>Of the lynchings, the mobs, and the murders, it would be impossible, except in a very extended work, to note the frequent and atrocious details of</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.260s</td><td>1 edits</td><td>Of the lynchings, the mobs, and the murders, it would be impossible, except in a very extended work, to note the frequent and atrocious details of</td></tr>
+</table></details>
+<details><summary>clean-2094-142345-0053 · 3.40s</summary><p><b>Reference:</b> FOR IF HE&#x27;S ANYWHERE ON THE FARM WE CAN SEND FOR HIM IN A MINUTE</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.653s</td><td>0 edits</td><td>For if he&#x27;s anywhere on the farm, we can send for him in a minute.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.291s</td><td>0 edits</td><td>For if he&#x27;s anywhere on the farm, we can send for him in a minute.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.694s</td><td>0 edits</td><td>For if he&#x27;s anywhere on the farm, we can send for him in a minute.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.098s</td><td>0 edits</td><td>For if he&#x27;s anywhere on the farm we can send for him in a minute.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.124s</td><td>0 edits</td><td>For if he&#x27;s anywhere on the farm we can send for him in a minute.</td></tr>
+</table></details>
+<details><summary>clean-7127-75947-0026 · 6.55s</summary><p><b>Reference:</b> WELL SAID MADEMOISELLE DE TONNAY CHARENTE I ALSO THINK A GOOD DEAL BUT I TAKE CARE</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.682s</td><td>3 edits</td><td>&quot;Well,&quot; said Mademoiselle Détanet-Challant, &quot;I also think a good deal, but I take care</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.412s</td><td>3 edits</td><td>&quot;Well,&quot; said Mademoiselle Détanet-Challant, &quot;I also think a good deal, but I take care</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.863s</td><td>3 edits</td><td>&quot;Well,&quot; said Mademoiselle Détanet-Challant, &quot;I also think a good deal, but I take care</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.149s</td><td>2 edits</td><td>Well, said Mademoiselle de Tonichalant, I also think a good deal. But I take care</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.190s</td><td>2 edits</td><td>Well, said Mademoiselle de Tonichalant, I also think a good deal. But I take care</td></tr>
+</table></details>
+<details><summary>clean-2961-961-0022 · 25.98s</summary><p><b>Reference:</b> THEN NOW LET ME EXPLAIN TO YOU THE ORDER OF OUR ENTERTAINMENT FIRST TIMAEUS WHO IS A NATURAL PHILOSOPHER WILL SPEAK OF THE ORIGIN OF THE WORLD GOING DOWN TO THE CREATION OF MAN AND THEN I SHALL RECEIVE THE MEN WHOM HE HAS CREATED AND SOME OF WHOM WILL HAVE BEEN EDUCATED BY YOU AND INTRODUCE THEM TO YOU AS THE LOST ATHENIAN CITIZENS OF WHOM THE EGYPTIAN RECORD SPOKE</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>3.175s</td><td>2 edits</td><td>then now let me explain to you the order of our entertainment first timaeus who is a natural philosopher will speak of the origin of the world going down to the creation of men and then i shall receive the men whom he has created and some of whom will have been educated by you and introduce them to you as the lost athenian citizens of whom the egyptian records spoke</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.850s</td><td>2 edits</td><td>then now let me explain to you the order of our entertainment first timaeus who is a natural philosopher will speak of the origin of the world going down to the creation of men and then i shall receive the men whom he has created and some of whom will have been educated by you and introduce them to you as the lost athenian citizens of whom the egyptian records spoke</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>2.175s</td><td>2 edits</td><td>then now let me explain to you the order of our entertainment first timaeus who is a natural philosopher will speak of the origin of the world going down to the creation of men and then i shall receive the men whom he has created and some of whom will have been educated by you and introduce them to you as the lost athenian citizens of whom the egyptian records spoke</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.591s</td><td>2 edits</td><td>Then now let me explain to you the order of our entertainment. First Timaeus, who is a natural philosopher, will speak of the origin of the world, going down to the creation of men, and then I shall receive the men whom he has created, and some of whom will have been educated by you, and introduce them to you as the lost Athenian citizens, of whom the Egyptian records spoke.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.662s</td><td>2 edits</td><td>Then now let me explain to you the order of our entertainment. First Timaeus, who is a natural philosopher, will speak of the origin of the world, going down to the creation of men, and then I shall receive the men whom he has created, and some of whom will have been educated by you, and introduce them to you as the lost Athenian citizens, of whom the Egyptian records spoke.</td></tr>
+</table></details>
+<details><summary>clean-8230-279154-0015 · 8.05s</summary><p><b>Reference:</b> THEY MUST HAVE SOME CHARACTERISTIC WHICH MAKES US REGARD THEM AS REFERRING TO MORE OR LESS REMOTE PORTIONS OF THE PAST</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.657s</td><td>0 edits</td><td>They must have some characteristic, which makes us regard them as referring to more or less remote portions of the past.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.406s</td><td>0 edits</td><td>They must have some characteristic, which makes us regard them as referring to more or less remote portions of the past.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.763s</td><td>0 edits</td><td>They must have some characteristic, which makes us regard them as referring to more or less remote portions of the past.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.121s</td><td>0 edits</td><td>They must have some characteristic, which makes us regard them as referring to more or less remote portions of the past.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.246s</td><td>0 edits</td><td>They must have some characteristic, which makes us regard them as referring to more or less remote portions of the past.</td></tr>
+</table></details>
+<details><summary>clean-7176-88083-0015 · 2.33s</summary><p><b>Reference:</b> ALMOST INSTANTLY HE WAS FORCED TO THE TOP</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.696s</td><td>0 edits</td><td>Almost instantly, he was forced to the top,</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.340s</td><td>0 edits</td><td>Almost instantly, he was forced to the top,</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.644s</td><td>0 edits</td><td>Almost instantly, he was forced to the top,</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.139s</td><td>0 edits</td><td>Almost instantly he was forced to the top,</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.091s</td><td>0 edits</td><td>Almost instantly he was forced to the top,</td></tr>
+</table></details>
+<details><summary>clean-1284-1181-0006 · 11.40s</summary><p><b>Reference:</b> WELL THAT MAY BE TRUE AGREED MARGOLOTTE BUT ON THE CONTRARY A SERVANT WITH TOO MUCH BRAINS IS SURE TO BECOME INDEPENDENT AND HIGH AND MIGHTY AND FEEL ABOVE HER WORK</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.723s</td><td>1 edits</td><td>well that may be true agreed margolot but on the contrary a servant with too much brains is sure to become independent and high and mighty and feel above her work</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.455s</td><td>1 edits</td><td>well that may be true agreed margolot but on the contrary a servant with too much brains is sure to become independent and high and mighty and feel above her work</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.840s</td><td>1 edits</td><td>well that may be true agreed margolot but on the contrary a servant with too much brains is sure to become independent and high and mighty and feel above her work</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.215s</td><td>1 edits</td><td>Well, that may be true, agreed Margolot. But on the contrary, a servant with too much brains is sure to become independent and high and mighty, and feel above her work.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.299s</td><td>1 edits</td><td>Well, that may be true, agreed Margolot. But on the contrary, a servant with too much brains is sure to become independent and high and mighty, and feel above her work.</td></tr>
+</table></details>
+<details><summary>clean-5142-33396-0005 · 2.23s</summary><p><b>Reference:</b> BUT I STAYED THAT SPRING AND BUILT ME A BOAT</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.461s</td><td>0 edits</td><td>but I stayed that spring and built me a boat</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.269s</td><td>0 edits</td><td>but I stayed that spring and built me a boat</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.689s</td><td>0 edits</td><td>but I stayed that spring and built me a boat</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.028s</td><td>1 edits</td><td>But I stayed that spring and built me a boat and</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.092s</td><td>1 edits</td><td>But I stayed that spring and built me a boat and</td></tr>
+</table></details>
+<details><summary>clean-8455-210777-0021 · 2.71s</summary><p><b>Reference:</b> BUT I MEAN TO HAVE MY INNINGS BEFORE LONG</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.243s</td><td>0 edits</td><td>but I mean to have my innings before long.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.261s</td><td>0 edits</td><td>but I mean to have my innings before long.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.630s</td><td>0 edits</td><td>but I mean to have my innings before long.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.071s</td><td>0 edits</td><td>but I mean to have my innings before long.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.105s</td><td>0 edits</td><td>but I mean to have my innings before long.</td></tr>
+</table></details>
+<details><summary>clean-2830-3980-0041 · 4.89s</summary><p><b>Reference:</b> GRACE INVOLVES THE REMISSION OF SINS PEACE AND A HAPPY CONSCIENCE</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.238s</td><td>0 edits</td><td>Grace involves the remission of sins, peace, and a happy conscience.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.134s</td><td>0 edits</td><td>Grace involves the remission of sins, peace, and a happy conscience.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.698s</td><td>0 edits</td><td>Grace involves the remission of sins, peace, and a happy conscience.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.082s</td><td>0 edits</td><td>Grace involves the remission of sins, peace, and a happy conscience.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.133s</td><td>0 edits</td><td>Grace involves the remission of sins, peace, and a happy conscience.</td></tr>
+</table></details>
+<details><summary>clean-4446-2273-0016 · 9.64s</summary><p><b>Reference:</b> HER HAIR IS STILL LIKE FLAX AND HER BLUE EYES ARE JUST LIKE A BABY&#x27;S AND SHE HAS THE SAME THREE FRECKLES ON HER LITTLE NOSE AND TALKS ABOUT GOING BACK TO HER BAINS DE MER</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.555s</td><td>2 edits</td><td>&quot;&#x27;Her hair is still like flax, &quot;&#x27;and her blue eyes are just like a baby&#x27;s, &quot;&#x27;and she has the same three freckles on her little nose &quot;&#x27;and talks about going back to Urbain de Mer.&#x27;</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.392s</td><td>2 edits</td><td>&quot;&#x27;Her hair is still like flax, &quot;&#x27;and her blue eyes are just like a baby&#x27;s, &quot;&#x27;and she has the same three freckles on her little nose &quot;&#x27;and talks about going back to Urbain de Mer.&#x27;</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>2.033s</td><td>2 edits</td><td>&quot;&#x27;Her hair is still like flax, &quot;&#x27;and her blue eyes are just like a baby&#x27;s, &quot;&#x27;and she has the same three freckles on her little nose &quot;&#x27;and talks about going back to Urbain de Mer.&#x27;</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.184s</td><td>1 edits</td><td>Her hair is still like flax, and her blue eyes are just like a baby&#x27;s, and she has the same three freckles on her little nose, and talks about going back to her band de mer.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.257s</td><td>1 edits</td><td>Her hair is still like flax, and her blue eyes are just like a baby&#x27;s, and she has the same three freckles on her little nose, and talks about going back to her band de mer.</td></tr>
+</table></details>
+<details><summary>clean-4077-13751-0006 · 13.06s</summary><p><b>Reference:</b> THEIR EYES WERE FROM THE FIRST TURNED IN ANTICIPATION TOWARD THE EVENING SUN NOT MERELY THAT THE WORK OF PROSELYTING SHOULD BE CARRIED ON IN THE WEST BUT THAT THE HEADQUARTERS OF THE CHURCH SHOULD BE THERE ESTABLISHED</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.670s</td><td>0 edits</td><td>Their eyes were from the first turned in anticipation toward the evening sun, not merely that the work of proselyting should be carried on in the west, but that the headquarters of the church should be there established.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.389s</td><td>0 edits</td><td>Their eyes were from the first turned in anticipation toward the evening sun, not merely that the work of proselyting should be carried on in the west, but that the headquarters of the church should be there established.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>2.103s</td><td>0 edits</td><td>Their eyes were from the first turned in anticipation toward the evening sun, not merely that the work of proselyting should be carried on in the west, but that the headquarters of the church should be there established.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.314s</td><td>1 edits</td><td>their eyes were from the first turned in anticipation toward the evening sun, not merely that the work of proselyteing should be carried on in the west, but that the headquarters of the church should be there established.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.352s</td><td>1 edits</td><td>their eyes were from the first turned in anticipation toward the evening sun, not merely that the work of proselyteing should be carried on in the west, but that the headquarters of the church should be there established.</td></tr>
+</table></details>
+<details><summary>clean-908-31957-0003 · 6.57s</summary><p><b>Reference:</b> WHEN CALLED BEFORE I TOLD HOW HASTILY I DROPPED MY FLOWERS OR BRAKE OFF FROM A GAME</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.375s</td><td>1 edits</td><td>when called before i told how hastily i dropped my flowers or break off from a game</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.225s</td><td>1 edits</td><td>when called before i told how hastily i dropped my flowers or break off from a game</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.837s</td><td>1 edits</td><td>when called before i told how hastily i dropped my flowers or break off from a game</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.109s</td><td>1 edits</td><td>When called before, I told how hastily I dropped my flowers, or break off from a game.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.185s</td><td>1 edits</td><td>When called before, I told how hastily I dropped my flowers, or break off from a game.</td></tr>
+</table></details>
+<details><summary>clean-8224-274384-0008 · 13.42s</summary><p><b>Reference:</b> THE GOOD NATURED AUDIENCE IN PITY TO FALLEN MAJESTY SHOWED FOR ONCE GREATER DEFERENCE TO THE KING THAN TO THE MINISTER AND SUNG THE PSALM WHICH THE FORMER HAD CALLED FOR</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.490s</td><td>0 edits</td><td>the good-natured audience in pity to fallen majesty showed for once greater deference to the king than to the minister and sung the psalm which the former had called for</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.346s</td><td>0 edits</td><td>the good-natured audience in pity to fallen majesty showed for once greater deference to the king than to the minister and sung the psalm which the former had called for</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.953s</td><td>0 edits</td><td>the good-natured audience in pity to fallen majesty showed for once greater deference to the king than to the minister and sung the psalm which the former had called for</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.292s</td><td>0 edits</td><td>The good natured audience, in pity to fallen majesty, showed for once greater deference to the king than to the minister, and sung the psalm which the former had called for.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.349s</td><td>0 edits</td><td>The good natured audience, in pity to fallen majesty, showed for once greater deference to the king than to the minister, and sung the psalm which the former had called for.</td></tr>
+</table></details>
+<details><summary>clean-672-122797-0006 · 13.95s</summary><p><b>Reference:</b> TO GROW AND GROW TO GET OLDER AND BE TALL THOUGHT THE TREE THAT AFTER ALL IS THE MOST DELIGHTFUL THING IN THE WORLD</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.285s</td><td>0 edits</td><td>to grow and grow to get older and be tall thought the tree that after all is the most delightful thing in the world</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.258s</td><td>0 edits</td><td>to grow and grow to get older and be tall thought the tree that after all is the most delightful thing in the world</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.842s</td><td>0 edits</td><td>to grow and grow to get older and be tall thought the tree that after all is the most delightful thing in the world</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.254s</td><td>0 edits</td><td>To grow and grow, to get older and be tall, thought the tree. That, after all, is the most delightful thing in the world.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.331s</td><td>0 edits</td><td>To grow and grow, to get older and be tall, thought the tree. That, after all, is the most delightful thing in the world.</td></tr>
+</table></details>
+<details><summary>clean-5105-28240-0002 · 4.01s</summary><p><b>Reference:</b> EXCLAIMED SERVADAC KEEPING HIS EYE UNMOVED AT HIS TELESCOPE</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.171s</td><td>1 edits</td><td>exclaimed Servadak, keeping his eye unmoved at his telescope.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.235s</td><td>1 edits</td><td>exclaimed Servadak, keeping his eye unmoved at his telescope.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.527s</td><td>1 edits</td><td>exclaimed Servadak, keeping his eye unmoved at his telescope.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.098s</td><td>0 edits</td><td>exclaimed Servadac, keeping his eye unmoved at his telescope.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.133s</td><td>0 edits</td><td>exclaimed Servadac, keeping his eye unmoved at his telescope.</td></tr>
+</table></details>
+<details><summary>clean-1089-134691-0009 · 20.05s</summary><p><b>Reference:</b> ANGRY WITH HIMSELF HE TRIED TO HIDE HIS FACE FROM THEIR EYES BY GAZING DOWN SIDEWAYS INTO THE SHALLOW SWIRLING WATER UNDER THE BRIDGE BUT HE STILL SAW A REFLECTION THEREIN OF THEIR TOP HEAVY SILK HATS AND HUMBLE TAPE LIKE COLLARS AND LOOSELY HANGING CLERICAL CLOTHES BROTHER HICKEY</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.459s</td><td>0 edits</td><td>Angry with himself, he tried to hide his face from their eyes by gazing down sideways into the shallow, swirling water under the bridge, but he still saw a reflection therein of their top-heavy silk hats, and humble, tape-like collars, and loosely hanging clerical clothes. &quot;&#x27;Brother Hickey,&#x27;</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.638s</td><td>0 edits</td><td>Angry with himself, he tried to hide his face from their eyes by gazing down sideways into the shallow, swirling water under the bridge, but he still saw a reflection therein of their top-heavy silk hats, and humble, tape-like collars, and loosely hanging clerical clothes. &quot;&#x27;Brother Hickey,&#x27;</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>2.074s</td><td>0 edits</td><td>Angry with himself, he tried to hide his face from their eyes by gazing down sideways into the shallow, swirling water under the bridge, but he still saw a reflection therein of their top-heavy silk hats, and humble, tape-like collars, and loosely hanging clerical clothes. &quot;&#x27;Brother Hickey,&#x27;</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.493s</td><td>0 edits</td><td>Angry with himself, he tried to hide his face from their eyes by gazing down sideways into the shallow, swirling water under the bridge, but he still saw a reflection therein of their top heavy silk hats, and humble tape like collars, and loosely hanging clerical clothes. Brother Hickey</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.493s</td><td>0 edits</td><td>Angry with himself, he tried to hide his face from their eyes by gazing down sideways into the shallow, swirling water under the bridge, but he still saw a reflection therein of their top heavy silk hats, and humble tape like collars, and loosely hanging clerical clothes. Brother Hickey</td></tr>
+</table></details>
+<details><summary>clean-1188-133604-0035 · 2.92s</summary><p><b>Reference:</b> THUS IN CHAUCER&#x27;S DREAM</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>1.991s</td><td>0 edits</td><td>thus in chaucer&#x27;s dream</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.195s</td><td>0 edits</td><td>thus in chaucer&#x27;s dream</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.646s</td><td>0 edits</td><td>thus in chaucer&#x27;s dream</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.049s</td><td>0 edits</td><td>Thus, in Chaucer&#x27;s dream,</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.116s</td><td>0 edits</td><td>Thus, in Chaucer&#x27;s dream,</td></tr>
+</table></details>
+<details><summary>clean-6829-68769-0039 · 4.04s</summary><p><b>Reference:</b> HE LOOKED UP RATHER UNGRACIOUSLY BUT MOTIONED THEM TO BE SEATED</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.097s</td><td>0 edits</td><td>He looked up rather ungraciously, but motioned them to be seated.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.217s</td><td>0 edits</td><td>He looked up rather ungraciously, but motioned them to be seated.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.720s</td><td>0 edits</td><td>He looked up rather ungraciously, but motioned them to be seated.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.125s</td><td>0 edits</td><td>He looked up rather ungraciously, but motioned them to be seated.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.141s</td><td>0 edits</td><td>He looked up rather ungraciously, but motioned them to be seated.</td></tr>
+</table></details>
+<details><summary>clean-1580-141083-0038 · 7.54s</summary><p><b>Reference:</b> I UNDERSTAND YOU TO SAY THAT THERE ARE THREE STUDENTS WHO USE THIS STAIR AND ARE IN THE HABIT OF PASSING YOUR DOOR YES THERE ARE</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.176s</td><td>0 edits</td><td>i understand you to say that there are three students who use this stair and are in the habit of passing your door yes there are</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.352s</td><td>0 edits</td><td>i understand you to say that there are three students who use this stair and are in the habit of passing your door yes there are</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.831s</td><td>0 edits</td><td>i understand you to say that there are three students who use this stair and are in the habit of passing your door yes there are</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.137s</td><td>0 edits</td><td>I understand you to say that there are three students who use this stair and are in the habit of passing your door? Yes, there are.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.217s</td><td>0 edits</td><td>I understand you to say that there are three students who use this stair and are in the habit of passing your door? Yes, there are.</td></tr>
+</table></details>
+<details><summary>clean-4970-29095-0023 · 3.90s</summary><p><b>Reference:</b> I HAVE NOTHING TO WEAR REPLIED THAT DEMURE PERSON</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.073s</td><td>0 edits</td><td>i have nothing to wear replied that demure person</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.202s</td><td>0 edits</td><td>i have nothing to wear replied that demure person</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.661s</td><td>0 edits</td><td>i have nothing to wear replied that demure person</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.059s</td><td>0 edits</td><td>I have nothing to wear, replied that demure person.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.120s</td><td>0 edits</td><td>I have nothing to wear, replied that demure person.</td></tr>
+</table></details>
+<details><summary>clean-4992-41806-0006 · 10.37s</summary><p><b>Reference:</b> RALPH THURSTON HAD FOUND A LINE OF LATIN FOR THEM IN HIS BELOVED HORACE TIBI SPLENDET FOCUS FOR YOU THE HEARTH FIRE SHINES</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.245s</td><td>0 edits</td><td>ralph thurston had found a line of latin for them in his beloved horace tibi splendet focus for you the hearth-fire shines</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.545s</td><td>0 edits</td><td>ralph thurston had found a line of latin for them in his beloved horace tibi splendet focus for you the hearth-fire shines</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.806s</td><td>0 edits</td><td>ralph thurston had found a line of latin for them in his beloved horace tibi splendet focus for you the hearth-fire shines</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.194s</td><td>1 edits</td><td>Ralph Thurston had found a line of Latin for them in his beloved Horrants Tibi splendet focus For you the hearth fire shines.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.294s</td><td>1 edits</td><td>Ralph Thurston had found a line of Latin for them in his beloved Horrants Tibi splendet focus For you the hearth fire shines.</td></tr>
+</table></details>
+<details><summary>clean-61-70970-0016 · 4.37s</summary><p><b>Reference:</b> WE WILL GO OUT TOGETHER TO THE BOWER THERE IS A WAY DOWN TO THE COURT FROM MY WINDOW</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.137s</td><td>0 edits</td><td>we will go out together to the bower there is a way down to the court from my window</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.540s</td><td>0 edits</td><td>we will go out together to the bower there is a way down to the court from my window</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.747s</td><td>0 edits</td><td>we will go out together to the bower there is a way down to the court from my window</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.088s</td><td>0 edits</td><td>We will go out together to the bower. There is a way down to the court from my window.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.134s</td><td>0 edits</td><td>We will go out together to the bower. There is a way down to the court from my window.</td></tr>
+</table></details>
+<details><summary>clean-237-134500-0003 · 3.17s</summary><p><b>Reference:</b> THE ORCHARD WAS SPARKLING AND RIPPLING IN THE SUN</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.162s</td><td>0 edits</td><td>The orchard was sparkling and rippling in the sun.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.570s</td><td>0 edits</td><td>The orchard was sparkling and rippling in the sun.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.734s</td><td>0 edits</td><td>The orchard was sparkling and rippling in the sun.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.068s</td><td>0 edits</td><td>The orchard was sparkling and rippling in the sun.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.106s</td><td>0 edits</td><td>The orchard was sparkling and rippling in the sun.</td></tr>
+</table></details>
+<details><summary>clean-3570-5694-0005 · 8.40s</summary><p><b>Reference:</b> UNDER THE TABU CERTAIN VICTUALS AND MORE PARTICULARLY CERTAIN BEVERAGES ARE STRICTLY RESERVED FOR THE USE OF THE SUPERIOR CLASS</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.276s</td><td>1 edits</td><td>Under the taboo, certain victuals, and more particularly, certain beverages, are strictly reserved for the use of the superior class.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.964s</td><td>1 edits</td><td>Under the taboo, certain victuals, and more particularly, certain beverages, are strictly reserved for the use of the superior class.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.909s</td><td>1 edits</td><td>Under the taboo, certain victuals, and more particularly, certain beverages, are strictly reserved for the use of the superior class.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.223s</td><td>1 edits</td><td>Under the taboo, certain victuals, and, more particularly, certain beverages, are strictly reserved for the use of the superior class.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.223s</td><td>1 edits</td><td>Under the taboo, certain victuals, and, more particularly, certain beverages, are strictly reserved for the use of the superior class.</td></tr>
+</table></details>
+<details><summary>clean-5683-32866-0002 · 5.12s</summary><p><b>Reference:</b> BUT DON&#x27;T THESE VERY WISE THINGS SOMETIMES TURN OUT VERY FOOLISHLY</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.083s</td><td>0 edits</td><td>&quot;But don&#x27;t these very wise things sometimes turn out very foolishly?&quot;</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.494s</td><td>0 edits</td><td>But don&#x27;t these very wise things sometimes turn out very foolishly?</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.685s</td><td>0 edits</td><td>But don&#x27;t these very wise things sometimes turn out very foolishly?</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.209s</td><td>0 edits</td><td>But don&#x27;t these very wise things sometimes turn out very foolishly?</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.171s</td><td>0 edits</td><td>But don&#x27;t these very wise things sometimes turn out very foolishly?</td></tr>
+</table></details>
+<details><summary>clean-121-123852-0004 · 16.29s</summary><p><b>Reference:</b> MY HEART DOTH PLEAD THAT THOU IN HIM DOST LIE A CLOSET NEVER PIERC&#x27;D WITH CRYSTAL EYES BUT THE DEFENDANT DOTH THAT PLEA DENY AND SAYS IN HIM THY FAIR APPEARANCE LIES</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.255s</td><td>1 edits</td><td>my heart doth plead that thou in him dost lie a closet never pierced with crystal eyes but the defendant doth that plea deny and says in him thy fair appearance lies</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.631s</td><td>1 edits</td><td>my heart doth plead that thou in him dost lie a closet never pierced with crystal eyes but the defendant doth that plea deny and says in him thy fair appearance lies</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.842s</td><td>1 edits</td><td>my heart doth plead that thou in him dost lie a closet never pierced with crystal eyes but the defendant doth that plea deny and says in him thy fair appearance lies</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.297s</td><td>1 edits</td><td>My heart doth plead That thou in him dost lie A closet never pierced with crystal eyes But the defendant doth that plea deny, And says In him thy fair appearance lies</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.394s</td><td>1 edits</td><td>My heart doth plead That thou in him dost lie A closet never pierced with crystal eyes But the defendant doth that plea deny, And says In him thy fair appearance lies</td></tr>
+</table></details>
+<details><summary>other-7902-96591-0000 · 2.10s</summary><p><b>Reference:</b> I AM FROM THE CUTTER LYING OFF THE COAST</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.049s</td><td>2 edits</td><td>I&#x27;m from the cutter lying off the coast.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.335s</td><td>2 edits</td><td>I&#x27;m from the cutter lying off the coast.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.867s</td><td>2 edits</td><td>I&#x27;m from the cutter lying off the coast.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.078s</td><td>3 edits</td><td>I&#x27;m from the cutter lying off the coast, said</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.097s</td><td>3 edits</td><td>I&#x27;m from the cutter lying off the coast, said</td></tr>
+</table></details>
+<details><summary>other-7902-96594-0025 · 1.82s</summary><p><b>Reference:</b> NO WAIT</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>1.972s</td><td>0 edits</td><td>No, wait.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.354s</td><td>0 edits</td><td>No, wait.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.616s</td><td>0 edits</td><td>No, wait.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.081s</td><td>0 edits</td><td>No. Wait.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.075s</td><td>0 edits</td><td>No. Wait.</td></tr>
+</table></details>
+<details><summary>other-4198-12259-0000 · 5.69s</summary><p><b>Reference:</b> DRAW REACH FILL MIX GIVE IT ME WITHOUT WATER</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.181s</td><td>0 edits</td><td>draw reach fill mix give it me without water</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.452s</td><td>0 edits</td><td>draw reach fill mix give it me without water</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.646s</td><td>0 edits</td><td>draw reach fill mix give it me without water</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.185s</td><td>0 edits</td><td>Draw, reach, fill, mix, give it me without water.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.167s</td><td>0 edits</td><td>Draw, reach, fill, mix, give it me without water.</td></tr>
+</table></details>
+<details><summary>other-3080-5040-0026 · 6.23s</summary><p><b>Reference:</b> WE GO ABROAD ALL DAY AND PLAY ALL NIGHT AND SAY OUR PRAYERS WHEN WE HAVE TIME</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.480s</td><td>0 edits</td><td>We go abroad all day and play all night and say our prayers when we have time.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.508s</td><td>0 edits</td><td>We go abroad all day and play all night and say our prayers when we have time.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.715s</td><td>0 edits</td><td>We go abroad all day and play all night and say our prayers when we have time.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.228s</td><td>0 edits</td><td>We go abroad all day and play all night and say our prayers when we have time.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.166s</td><td>0 edits</td><td>We go abroad all day and play all night and say our prayers when we have time.</td></tr>
+</table></details>
+<details><summary>other-5764-299665-0000 · 17.26s</summary><p><b>Reference:</b> AFTERWARD IT WAS SUPPOSED THAT HE WAS SATISFIED WITH THE BLOOD OF OXEN LAMBS AND DOVES AND THAT IN EXCHANGE FOR OR ON ACCOUNT OF THESE SACRIFICES THIS GOD GAVE RAIN SUNSHINE AND HARVEST</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.458s</td><td>1 edits</td><td>afterward it was supposed that he was satisfied with the blood of oxen lambs and doves and that in exchange for or in account of these sacrifices this god gave rain sunshine and harvest</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.638s</td><td>1 edits</td><td>afterward it was supposed that he was satisfied with the blood of oxen lambs and doves and that in exchange for or in account of these sacrifices this god gave rain sunshine and harvest</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.859s</td><td>1 edits</td><td>afterward it was supposed that he was satisfied with the blood of oxen lambs and doves and that in exchange for or in account of these sacrifices this god gave rain sunshine and harvest</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.398s</td><td>1 edits</td><td>Afterward it was supposed that he was satisfied with the blood of oxen, lambs, and doves, and that in exchange for or in account of these sacrifices, this god gave rain, sunshine, and harvest.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.415s</td><td>1 edits</td><td>Afterward it was supposed that he was satisfied with the blood of oxen, lambs, and doves, and that in exchange for or in account of these sacrifices, this god gave rain, sunshine, and harvest.</td></tr>
+</table></details>
+<details><summary>other-6128-63240-0004 · 15.87s</summary><p><b>Reference:</b> HE WAS TALL AND LEAN AND DRESSED THROUGHOUT IN BLACK HIS SHIRT COLLAR WAS LOW AND WIDE AND THE TRIANGLE OF LINEN A LITTLE CRUMPLED EXHIBITED BY THE OPENING OF HIS WAISTCOAT WAS ADORNED BY A PIN CONTAINING A SMALL RED STONE</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.397s</td><td>0 edits</td><td>he was tall and lean and dressed throughout in black his shirt-collar was low and wide and the triangle of linen a little crumpled exhibited by the opening of his waistcoat was adorned by a pin containing a small red stone</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.660s</td><td>0 edits</td><td>he was tall and lean and dressed throughout in black his shirt-collar was low and wide and the triangle of linen a little crumpled exhibited by the opening of his waistcoat was adorned by a pin containing a small red stone</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.979s</td><td>0 edits</td><td>he was tall and lean and dressed throughout in black his shirt-collar was low and wide and the triangle of linen a little crumpled exhibited by the opening of his waistcoat was adorned by a pin containing a small red stone</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.401s</td><td>0 edits</td><td>He was tall and lean, and dressed throughout in black. His shirt collar was low and wide, and the triangle of linen, a little crumpled, exhibited by the opening of his waistcoat, was adorned by a pin containing a small red stone.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.402s</td><td>0 edits</td><td>He was tall and lean, and dressed throughout in black. His shirt collar was low and wide, and the triangle of linen, a little crumpled, exhibited by the opening of his waistcoat, was adorned by a pin containing a small red stone.</td></tr>
+</table></details>
+<details><summary>other-5484-24318-0003 · 5.01s</summary><p><b>Reference:</b> WHAT PLEASURE HAD LIFE TO OFFER HIM THE BLIND MAN WHO WAS ALREADY DEAD TO HIS ART</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.239s</td><td>1 edits</td><td>what pleasure had life to offer him the blind man who was already dead to his heart</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.398s</td><td>0 edits</td><td>what pleasure had life to offer him the blind man who was already dead to his art</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.774s</td><td>0 edits</td><td>what pleasure had life to offer him the blind man who was already dead to his art</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.126s</td><td>0 edits</td><td>What pleasure had life to offer him, the blind man, who was already dead to his art,</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.139s</td><td>0 edits</td><td>What pleasure had life to offer him, the blind man, who was already dead to his art,</td></tr>
+</table></details>
+<details><summary>other-3331-159605-0014 · 9.67s</summary><p><b>Reference:</b> POLLY FELT A VERY CORDIAL FRIENDSHIP FOR MISTER SYDNEY BUT NOT ONE PARTICLE OF THE LOVE WHICH IS THE ONLY COIN IN WHICH LOVE CAN BE TRULY PAID</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.226s</td><td>2 edits</td><td>polly felt a very courteous friendship for mr sydney but not one particle of the love which is the only coin in which love can be truly paid</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.570s</td><td>2 edits</td><td>polly felt a very courteous friendship for mr sydney but not one particle of the love which is the only coin in which love can be truly paid</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.830s</td><td>2 edits</td><td>polly felt a very courteous friendship for mr sydney but not one particle of the love which is the only coin in which love can be truly paid</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.231s</td><td>1 edits</td><td>Polly felt a very cordial friendship for mister Sidney, but not one particle of the love which is the only coin in which love can be truly paid.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.257s</td><td>1 edits</td><td>Polly felt a very cordial friendship for mister Sidney, but not one particle of the love which is the only coin in which love can be truly paid.</td></tr>
+</table></details>
+<details><summary>other-533-1066-0014 · 2.47s</summary><p><b>Reference:</b> I ASKED NO QUESTIONS</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>1.947s</td><td>1 edits</td><td>I ask no questions.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.275s</td><td>1 edits</td><td>I ask no questions.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.624s</td><td>1 edits</td><td>I ask no questions.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.046s</td><td>1 edits</td><td>I ask no questions.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.085s</td><td>1 edits</td><td>I ask no questions.</td></tr>
+</table></details>
+<details><summary>other-3528-168669-0035 · 3.83s</summary><p><b>Reference:</b> I SAY MORE OFTEN MORE OFTEN THAN WHAT</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.049s</td><td>0 edits</td><td>I say more often. More often than what?</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.179s</td><td>0 edits</td><td>I say more often. More often than what?</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.704s</td><td>0 edits</td><td>I say more often. More often than what?</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>0.989s</td><td>0 edits</td><td>I say more often. More often than what?</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.111s</td><td>0 edits</td><td>I say more often. More often than what?</td></tr>
+</table></details>
+<details><summary>other-7975-280057-0005 · 3.10s</summary><p><b>Reference:</b> MY ELDEST BROTHER RICHARD DIED IN EIGHTEEN SIXTY</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.032s</td><td>2 edits</td><td>My eldest brother Richard died in 1860.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.319s</td><td>2 edits</td><td>My eldest brother Richard died in 1860.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.709s</td><td>2 edits</td><td>My eldest brother Richard died in 1860.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>0.971s</td><td>0 edits</td><td>My eldest brother Richard died in eighteen sixty.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.114s</td><td>0 edits</td><td>My eldest brother Richard died in eighteen sixty.</td></tr>
+</table></details>
+<details><summary>other-3005-163389-0006 · 9.97s</summary><p><b>Reference:</b> SO THEY ALWAYS ACQUIT AND THEN A MAN GOES IN THE NIGHT WITH A HUNDRED MASKED COWARDS AT HIS BACK AND LYNCHES THE RASCAL</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.284s</td><td>0 edits</td><td>So they always acquit, and then a man goes in the night with a hundred masked cowards at his back and lynches the rascal.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.567s</td><td>0 edits</td><td>So they always acquit, and then a man goes in the night with a hundred masked cowards at his back and lynches the rascal.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.865s</td><td>0 edits</td><td>So they always acquit, and then a man goes in the night with a hundred masked cowards at his back and lynches the rascal.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.260s</td><td>0 edits</td><td>So they always acquit, and then a man goes in the night with a hundred masked cowards at his back, and lynches the rascal.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.244s</td><td>0 edits</td><td>So they always acquit, and then a man goes in the night with a hundred masked cowards at his back, and lynches the rascal.</td></tr>
+</table></details>
+<details><summary>other-6938-70848-0000 · 3.31s</summary><p><b>Reference:</b> EVEN THE SUN CAME OUT PALE AND WATERY AT NOON</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.143s</td><td>0 edits</td><td>Even the sun came out pale and watery at noon.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.360s</td><td>0 edits</td><td>Even the sun came out pale and watery at noon.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.724s</td><td>0 edits</td><td>Even the sun came out pale and watery at noon.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.150s</td><td>0 edits</td><td>Even the sun came out pale and watery at noon,</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.107s</td><td>0 edits</td><td>Even the sun came out pale and watery at noon,</td></tr>
+</table></details>
+<details><summary>other-8131-117016-0014 · 7.79s</summary><p><b>Reference:</b> THE REST OF YOU CAN TEAM UP ANY WAY YOU WANT TONIGHT PICK ANY ROUTE THAT&#x27;S OPEN OKAY MEN LET&#x27;S GO</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.185s</td><td>0 edits</td><td>The rest of you can team up any way you want tonight. Pick any route that&#x27;s open. Okay men, let&#x27;s go.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.315s</td><td>0 edits</td><td>The rest of you can team up any way you want tonight. Pick any route that&#x27;s open. Okay, men, let&#x27;s go.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.896s</td><td>0 edits</td><td>The rest of you can team up any way you want tonight. Pick any route that&#x27;s open. Okay, men, let&#x27;s go.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.224s</td><td>2 edits</td><td>The rest of you can team up any way you want to night. Pick any route that&#x27;s open. Okay, men, let&#x27;s go.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.220s</td><td>2 edits</td><td>The rest of you can team up any way you want to night. Pick any route that&#x27;s open. Okay, men, let&#x27;s go.</td></tr>
+</table></details>
+<details><summary>other-5442-41169-0005 · 4.01s</summary><p><b>Reference:</b> SHALL WE GO ON YOUR EXCELLENCY FINE CHAMPAGNE</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.028s</td><td>0 edits</td><td>Shall we go on, Your Excellency, fine champagne?</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.417s</td><td>0 edits</td><td>Shall we go on, Your Excellency, fine champagne?</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.820s</td><td>0 edits</td><td>Shall we go on, Your Excellency, fine champagne?</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.113s</td><td>1 edits</td><td>Shall we go on, your Excellency? Find champagne?</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.130s</td><td>1 edits</td><td>Shall we go on, your Excellency? Find champagne?</td></tr>
+</table></details>
+<details><summary>other-3538-163622-0005 · 5.91s</summary><p><b>Reference:</b> THEN THE KING PROMISED HIM THE SAME PUNISHMENT AND THE SAME REWARD THAT HE HAD PROMISED HIS BROTHER</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.045s</td><td>0 edits</td><td>then the king promised him the same punishment and the same reward that he had promised his brother</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.301s</td><td>0 edits</td><td>then the king promised him the same punishment and the same reward that he had promised his brother</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.738s</td><td>0 edits</td><td>then the king promised him the same punishment and the same reward that he had promised his brother</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.191s</td><td>0 edits</td><td>Then the king promised him the same punishment and the same reward that he had promised his brother.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.176s</td><td>0 edits</td><td>Then the king promised him the same punishment and the same reward that he had promised his brother.</td></tr>
+</table></details>
+<details><summary>other-8461-281231-0027 · 5.93s</summary><p><b>Reference:</b> SO SAYING HE MOUNTED HIS STRONG WAR HORSE AND RODE OFF THROUGH THE FOREST</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.075s</td><td>0 edits</td><td>so saying he mounted his strong war-horse and rode off through the forest</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.494s</td><td>0 edits</td><td>so saying he mounted his strong war-horse and rode off through the forest</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.739s</td><td>0 edits</td><td>so saying he mounted his strong war-horse and rode off through the forest</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.164s</td><td>0 edits</td><td>So saying, he mounted his strong war-horse and rode off through the forest.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.171s</td><td>0 edits</td><td>So saying, he mounted his strong war-horse and rode off through the forest.</td></tr>
+</table></details>
+<details><summary>other-3764-168670-0056 · 5.40s</summary><p><b>Reference:</b> ONE OF TWO THINGS WILL HAPPEN HE WILL EITHER BE SOBER OR HE WILL NOT BE SOBER</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.116s</td><td>0 edits</td><td>one of two things will happen. He will either be sober or he will not be sober.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.250s</td><td>0 edits</td><td>one of two things will happen. He will either be sober or he will not be sober.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.773s</td><td>0 edits</td><td>one of two things will happen. He will either be sober or he will not be sober.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.177s</td><td>0 edits</td><td>one of two things will happen. He will either be sober, or he will not be sober.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.173s</td><td>0 edits</td><td>one of two things will happen. He will either be sober, or he will not be sober.</td></tr>
+</table></details>
+<details><summary>other-3997-180294-0024 · 2.75s</summary><p><b>Reference:</b> THE BOXES FILLED ONE AFTER ANOTHER</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.032s</td><td>0 edits</td><td>The boxes filled one after another.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.334s</td><td>0 edits</td><td>The boxes filled one after another.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.762s</td><td>0 edits</td><td>The boxes filled one after another.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.192s</td><td>0 edits</td><td>the boxes filled one after another,</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.101s</td><td>0 edits</td><td>the boxes filled one after another,</td></tr>
+</table></details>
+<details><summary>other-4294-9934-0013 · 3.08s</summary><p><b>Reference:</b> WHAT ARE YOU GOING TO DO I DO NOT KNOW</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.087s</td><td>0 edits</td><td>What are you going to do? I do not know.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.512s</td><td>0 edits</td><td>What are you going to do? I do not know.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.854s</td><td>0 edits</td><td>What are you going to do? I do not know.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.190s</td><td>0 edits</td><td>What are you going to do? I do not know.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.105s</td><td>0 edits</td><td>What are you going to do? I do not know.</td></tr>
+</table></details>
+<details><summary>other-1688-142285-0078 · 2.69s</summary><p><b>Reference:</b> HAVE YOU MET WITH A SERVANT DEAR</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.076s</td><td>0 edits</td><td>have you met with a servant dear</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.407s</td><td>0 edits</td><td>have you met with a servant dear</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.744s</td><td>0 edits</td><td>have you met with a servant dear</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.201s</td><td>0 edits</td><td>Have you met with a servant, dear?</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.102s</td><td>0 edits</td><td>Have you met with a servant, dear?</td></tr>
+</table></details>
+<details><summary>other-4852-28312-0003 · 4.05s</summary><p><b>Reference:</b> HEAVY HAND HEWN BEAMS CROSSED IT FROM ONE SIDE TO THE OTHER</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.078s</td><td>0 edits</td><td>heavy hand-hewn beams crossed it from one side to the other</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.139s</td><td>0 edits</td><td>heavy hand-hewn beams crossed it from one side to the other</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.752s</td><td>0 edits</td><td>heavy hand-hewn beams crossed it from one side to the other</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.148s</td><td>1 edits</td><td>Heavy hand un beams crossed it from one side to the other.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.119s</td><td>1 edits</td><td>Heavy hand un beams crossed it from one side to the other.</td></tr>
+</table></details>
+<details><summary>other-1998-15444-0025 · 11.80s</summary><p><b>Reference:</b> TO PURIFY IT ADD A SMALL QUANTITY OF DILUTE SULPHURIC ACID AND AFTER EVAPORATING TO THREE QUARTERS OF ITS BULK ADD A SATURATED SOLUTION OF CARBONATE OF POTASH OR SODA</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.223s</td><td>0 edits</td><td>to purify it add a small quantity of dilute sulphuric acid and after evaporating to three quarters of its bulk add a saturated solution of carbonate of potash or soda</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.498s</td><td>0 edits</td><td>to purify it add a small quantity of dilute sulphuric acid and after evaporating to three quarters of its bulk add a saturated solution of carbonate of potash or soda</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.882s</td><td>0 edits</td><td>to purify it add a small quantity of dilute sulphuric acid and after evaporating to three quarters of its bulk add a saturated solution of carbonate of potash or soda</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.337s</td><td>1 edits</td><td>To purify it, add a small quantity of dilute sulfuric acid, and, after evaporating to three quarters of its bulk, add a saturated solution of carbonate of potash or soda.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.332s</td><td>1 edits</td><td>To purify it, add a small quantity of dilute sulfuric acid, and, after evaporating to three quarters of its bulk, add a saturated solution of carbonate of potash or soda.</td></tr>
+</table></details>
+<details><summary>other-7105-2330-0020 · 2.94s</summary><p><b>Reference:</b> ANYWAY HE WON&#x27;T GO UNLESS HE HAS A BAND</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>1.973s</td><td>0 edits</td><td>Anyway, he won&#x27;t go unless he has a band.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.356s</td><td>0 edits</td><td>Anyway, he won&#x27;t go unless he has a band.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.723s</td><td>0 edits</td><td>Anyway, he won&#x27;t go unless he has a band.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.139s</td><td>0 edits</td><td>Anyway, he won&#x27;t go unless he has a band.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.106s</td><td>0 edits</td><td>Anyway, he won&#x27;t go unless he has a band.</td></tr>
+</table></details>
+<details><summary>other-6432-63722-0000 · 4.29s</summary><p><b>Reference:</b> BUT SCUSE ME DIDN&#x27;T YO FIGGER ON DOIN SOME DETECTIN AN GIVE UP FISHIN</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.028s</td><td>7 edits</td><td>&quot;&#x27;But scuse me, didn&#x27;t you figure on doing some detecting and giving up fishing?&#x27;</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.465s</td><td>7 edits</td><td>&quot;&#x27;But scuse me, didn&#x27;t you figure on doing some detecting and giving up fishing?&#x27;</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.760s</td><td>7 edits</td><td>&quot;&#x27;But scuse me, didn&#x27;t you figure on doing some detecting and giving up fishing?&#x27;</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.214s</td><td>7 edits</td><td>But excuse me, didn&#x27;t you figure on doing some detectin&#x27; and givin&#x27; up fission?</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.140s</td><td>7 edits</td><td>But excuse me, didn&#x27;t you figure on doing some detectin&#x27; and givin&#x27; up fission?</td></tr>
+</table></details>
+<details><summary>other-6432-63723-0042 · 1.80s</summary><p><b>Reference:</b> THANK YOU NO</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>1.920s</td><td>0 edits</td><td>Thank you. No.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.050s</td><td>0 edits</td><td>Thank you. No.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.639s</td><td>0 edits</td><td>Thank you. No.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.114s</td><td>0 edits</td><td>Thank you, no.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.077s</td><td>0 edits</td><td>Thank you, no.</td></tr>
+</table></details>
+<details><summary>other-2414-128292-0016 · 3.02s</summary><p><b>Reference:</b> THE DEVIL HIMSELF IS PERHAPS SKIN</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>1.989s</td><td>1 edits</td><td>The devil himself is perhaps king.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.069s</td><td>1 edits</td><td>The devil himself is perhaps king.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.633s</td><td>1 edits</td><td>The devil himself is perhaps king.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.147s</td><td>1 edits</td><td>The devil himself is perhaps kin.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.104s</td><td>1 edits</td><td>The devil himself is perhaps kin.</td></tr>
+</table></details>
+<details><summary>other-4350-10919-0019 · 2.71s</summary><p><b>Reference:</b> OH TIME&#x27;S UP ALREADY AND HE WENT TO THE DOOR</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.000s</td><td>0 edits</td><td>&quot;Oh, time&#x27;s up already,&quot; and he went to the door.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.214s</td><td>0 edits</td><td>Oh, time&#x27;s up already. And he went to the door.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.779s</td><td>0 edits</td><td>Oh, time&#x27;s up already. And he went to the door.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.176s</td><td>0 edits</td><td>Oh, time&#x27;s up already and he went to the door.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.102s</td><td>0 edits</td><td>Oh, time&#x27;s up already and he went to the door.</td></tr>
+</table></details>
+<details><summary>other-8188-269290-0014 · 2.48s</summary><p><b>Reference:</b> BUT DON&#x27;T LOCK ME OUT PLEASE ANNIE</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.043s</td><td>0 edits</td><td>&quot;But don&#x27;t lock me out, please, Annie.&quot;</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.095s</td><td>0 edits</td><td>&quot;But don&#x27;t lock me out, please, Annie.&quot;</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.659s</td><td>0 edits</td><td>&quot;But don&#x27;t lock me out, please, Annie.&quot;</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.102s</td><td>0 edits</td><td>But don&#x27;t lock me out, please, Annie.</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.092s</td><td>0 edits</td><td>But don&#x27;t lock me out, please, Annie.</td></tr>
+</table></details>
+<details><summary>other-8188-269288-0057 · 5.46s</summary><p><b>Reference:</b> OH THIS WILL KILL ME MY HEART WILL BREAK THIS WILL KILL ME</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.286s</td><td>0 edits</td><td>Oh, this will kill me. My heart will break. This will kill me.</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.186s</td><td>0 edits</td><td>Oh, this will kill me. My heart will break. This will kill me.</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.724s</td><td>0 edits</td><td>Oh, this will kill me. My heart will break. This will kill me.</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.182s</td><td>0 edits</td><td>Oh this will kill me My heart will break this will kill me</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.169s</td><td>0 edits</td><td>Oh this will kill me My heart will break this will kill me</td></tr>
+</table></details>
+<details><summary>silence-1 · 1.00s</summary><p><b>Reference:</b> (silence)</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.050s</td><td>0 edits</td><td>(empty)</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.086s</td><td>0 edits</td><td>(empty)</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>1.705s</td><td>0 edits</td><td>(empty)</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.061s</td><td>0 edits</td><td>(empty)</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.080s</td><td>0 edits</td><td>(empty)</td></tr>
+</table></details>
+<details><summary>silence-5 · 5.00s</summary><p><b>Reference:</b> (silence)</p><table>
+<tr><td>Whisper 1.8.6 CLI (current)</td><td>2.156s</td><td>0 edits</td><td>(empty)</td></tr>
+<tr><td>Whisper 1.9.5 CLI</td><td>2.237s</td><td>0 edits</td><td>(empty)</td></tr>
+<tr><td>Whisper 1.9.5 resident</td><td>3.252s</td><td>0 edits</td><td>(empty)</td></tr>
+<tr><td>Parakeet v3 Q8 CLI</td><td>1.120s</td><td>0 edits</td><td>(empty)</td></tr>
+<tr><td>Parakeet v3 Q8 resident</td><td>0.120s</td><td>0 edits</td><td>(empty)</td></tr>
+</table></details>
+</div><h2>Reproducibility</h2><ul>
+<li><a href="whisper-1.8.6-cli.json">Whisper 1.8.6 CLI (current) raw JSON</a>; run 2026-10-15T19:32:02.265391+00:00; threads 6, beam 3; model SHA-256 <code>317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1</code>; binary SHA-256 <code>8ae0405fc0053907b442e492a7bf4453aae8e05eadddf2252d617a9a9d092cfb</code>.</li>
+<li><a href="whisper-1.9.5-cli.json">Whisper 1.9.5 CLI raw JSON</a>; run 2026-10-15T19:34:25.641806+00:00; threads 6, beam 3; model SHA-256 <code>317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1</code>; binary SHA-256 <code>a563f936f498c640ab31ebc73d72874c4916c27c5d058d3458f3b042e9969c79</code>.</li>
+<li><a href="whisper-1.9.5-resident.json">Whisper 1.9.5 resident raw JSON</a>; run 2026-10-15T19:36:54.398751+00:00; threads 6, beam 3; model SHA-256 <code>317eb69c11673c9de1e1f0d459b253999804ec71ac4c23c17ecf5fbe24e259a1</code>; binary SHA-256 <code>e6b0de7baec5627b43e6316431209ebb0ea251ad827d1d49f591eb30f34400f7</code>.</li>
+<li><a href="parakeet-cli.json">Parakeet v3 Q8 CLI raw JSON</a>; run 2026-10-15T19:38:50.027498+00:00; threads 6, beam greedy; model SHA-256 <code>4d64e9e96c2792186d072fde0034df0ad670cf680a2f53069052ead827fd600e</code>; binary SHA-256 <code>bf716545fa84046186447b8ed459c8d5e006a629bb1fb721d9a305332259e2a6</code>.</li>
+<li><a href="parakeet-resident.json">Parakeet v3 Q8 resident raw JSON</a>; run 2026-10-15T19:40:04.019210+00:00; threads 6, beam greedy; model SHA-256 <code>4d64e9e96c2792186d072fde0034df0ad670cf680a2f53069052ead827fd600e</code>; binary SHA-256 <code>e6b0de7baec5627b43e6316431209ebb0ea251ad827d1d49f591eb30f34400f7</code>.</li>
+</ul><p>Manifest SHA-256: <code>67f1332073db019f8cad92f86fa4f82a555af8b399da2acf2ff3d49be3911688</code>. Pinned dataset revision: <code>71cacbfb7e2354c4226d01e70d77d5fca3d04ba1</code>. Uniform row offsets from test-clean and test-other; no accuracy-based filtering. All configurations run serially. Retained JSON includes every hypothesis, timing, error, host load and memory snapshot.</p>
+<p>Recorded audio paths were normalized to manifest-relative filenames for portability. Original manifest hashes are retained in the raw JSON; audio checksums, references, hypotheses and timings are unchanged. Generate the audio and its manifest with prepare_audio.py before rerunning the benchmark.</p>
+<footer>LibriSpeech: Vassil Panayotov, Guoguo Chen, Daniel Povey and Sanjeev Khudanpur (2015); recordings from LibriVox. <a href="https://www.openslr.org/12">Dataset and attribution</a>, <a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. <a href="https://huggingface.co/datasets/openslr/librispeech_asr">Pinned Parquet mirror</a>. Limitations: read English audiobooks, small sample, no live end-to-end desktop test in this report.</footer><script>document.querySelector("#search").oninput=e=>{const q=e.target.value.toLowerCase();document.querySelectorAll("#clips details").forEach(d=>d.hidden=!d.textContent.toLowerCase().includes(q))}</script></html>

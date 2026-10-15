@@ -1,13 +1,8 @@
 """Transcription backend abstraction.
 
-Two backends share a common interface so the daemon can swap between
-faster-whisper (CPU, default) and whisper.cpp (Vulkan GPU, optional)
-without changing the VAD, D-Bus, or IBus layers.
-
-The CPU backend delegates to ``transcribe_pcm`` in ``audio_common``,
-keeping a single source of truth for the faster-whisper call.  The GPU
-backend shells out to the ``whisper-cli`` binary, piping PCM audio as
-an in-memory WAV file via stdin.
+CPU Whisper and GPU Whisper/Parakeet share the same PCM interface.
+GPU models live in a private native worker for the daemon's lifetime.
+The CLI adapter remains available for reproducible baseline benchmarks.
 """
 
 from __future__ import annotations
@@ -21,9 +16,10 @@ import wave
 from pathlib import Path
 from typing import Any, Protocol
 
-from kdictate.app_metadata import GGML_MODEL_PATH
+from kdictate.app_metadata import GGML_MODEL_PATH, PARAKEET_MODEL_PATH
 from kdictate.audio_common import postprocess_transcript, transcribe_pcm
 from kdictate.exceptions import TranscriptionError
+from kdictate.resident_backend import ResidentBackend
 
 logger = logging.getLogger("kdictate.daemon.backend")
 
@@ -196,35 +192,43 @@ def create_cpu_backend(model: Any, config: Any) -> FasterWhisperBackend:
     )
 
 
-def create_gpu_backend(config: Any) -> WhisperCppBackend | None:
-    """Try to build a whisper.cpp GPU backend.  Returns None on failure."""
-    binary = find_whisper_cpp()
+def find_stt_worker() -> str | None:
+    """Resolve the worker built against our pinned Whisper/Parakeet libraries."""
+    override = os.environ.get("KDICTATE_STT_WORKER")
+    candidates = [override,
+                  "/usr/lib/kdictate/bin/kdictate-stt-worker",
+                  str(Path.home() / ".local/share/kdictate/native/bin/kdictate-stt-worker"),
+                  shutil.which("kdictate-stt-worker")]
+    return next((path for path in candidates if path and os.path.isfile(path) and os.access(path, os.X_OK)), None)
+
+
+def create_gpu_backend(config: Any) -> ResidentBackend | None:
+    """Load and warm the selected GPU model once, with no model fallback."""
+    binary = find_stt_worker()
     if binary is None:
-        logger.info("whisper.cpp not found on PATH; GPU backend unavailable")
+        logger.error("kdictate-stt-worker not found; rebuild the native package")
         return None
 
-    if not GGML_MODEL_PATH.is_file():
-        logger.info("GGML model not found at %s; GPU backend unavailable", GGML_MODEL_PATH)
+    engine = "parakeet" if config.backend == "parakeet" else "whisper"
+    model_path = PARAKEET_MODEL_PATH if engine == "parakeet" else GGML_MODEL_PATH
+    if not model_path.is_file():
+        logger.error("selected %s model not found at %s", engine, model_path)
         return None
 
-    backend = WhisperCppBackend(
-        binary, GGML_MODEL_PATH,
-        language=config.language,
-        n_threads=config.cpu_threads,
-        no_speech_threshold=config.no_speech_threshold,
-    )
-
-    logger.info(
-        "GPU backend: binary=%s model=%s beam=%d threads=%d flash_attn=%s no_speech_thold=%.2f",
-        binary, GGML_MODEL_PATH, backend.beam_size, backend.n_threads,
-        backend.flash_attn, backend.no_speech_threshold,
-    )
-
-    # Probe with the exact same flags used at runtime.
-    if not _probe_whisper_cpp(backend):
-        logger.warning("whisper.cpp probe failed; GPU backend unavailable")
+    backend = None
+    try:
+        import numpy as np
+        backend = ResidentBackend(binary, model_path, engine=engine, language=config.language,
+                                  n_threads=config.cpu_threads, beam_size=config.beam_size,
+                                  no_speech_threshold=config.no_speech_threshold)
+        # Compile/allocate the decode path at startup, before the first toggle.
+        backend.transcribe([np.zeros(16000, dtype=np.int16)], 1.0)
+    except TranscriptionError as exc:
+        if backend is not None:
+            backend.close()
+        logger.error("resident GPU model probe failed: %s", exc)
         return None
-
+    logger.info("resident GPU model ready: engine=%s binary=%s model=%s", engine, binary, model_path)
     return backend
 
 

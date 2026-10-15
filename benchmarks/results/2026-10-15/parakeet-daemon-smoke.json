@@ -1,0 +1,8 @@
+{
+  "engine": "parakeet",
+  "worker_pid": 512757,
+  "load_seconds": 2.167926322988933,
+  "daemon_ready": true,
+  "worker_reaped": true,
+  "exit_code": 0
+}

@@ -1,0 +1,274 @@
+{
+  "cli_pairs": [
+    {
+      "id": "clean-6930-75918-0000",
+      "audio_seconds": 3.505,
+      "reference": "CONCORD RETURNED TO ITS PLACE AMIDST THE TENTS",
+      "order": [
+        "old",
+        "new"
+      ],
+      "old": {
+        "seconds": 4.300704155000858,
+        "hypothesis": "Concord returned to its place amidst the tents.",
+        "edits": 0
+      },
+      "new": {
+        "seconds": 3.1800299719907343,
+        "hypothesis": "Concord returned to its place amidst the tents.",
+        "edits": 0
+      }
+    },
+    {
+      "id": "clean-5142-33396-0005",
+      "audio_seconds": 2.225,
+      "reference": "BUT I STAYED THAT SPRING AND BUILT ME A BOAT",
+      "order": [
+        "new",
+        "old"
+      ],
+      "new": {
+        "seconds": 3.0812140179914422,
+        "hypothesis": "but I stayed that spring and built me a boat",
+        "edits": 0
+      },
+      "old": {
+        "seconds": 3.3412907520250883,
+        "hypothesis": "but I stayed that spring and built me a boat",
+        "edits": 0
+      }
+    },
+    {
+      "id": "clean-1188-133604-0035",
+      "audio_seconds": 2.925,
+      "reference": "THUS IN CHAUCER'S DREAM",
+      "order": [
+        "old",
+        "new"
+      ],
+      "old": {
+        "seconds": 3.327176321996376,
+        "hypothesis": "thus in chaucer's dream",
+        "edits": 0
+      },
+      "new": {
+        "seconds": 3.653958804003196,
+        "hypothesis": "thus in chaucer's dream",
+        "edits": 0
+      }
+    },
+    {
+      "id": "clean-5683-32866-0002",
+      "audio_seconds": 5.125,
+      "reference": "BUT DON'T THESE VERY WISE THINGS SOMETIMES TURN OUT VERY FOOLISHLY",
+      "order": [
+        "new",
+        "old"
+      ],
+      "new": {
+        "seconds": 3.3384712819824927,
+        "hypothesis": "But don't these very wise things sometimes turn out very foolishly?",
+        "edits": 0
+      },
+      "old": {
+        "seconds": 3.115350423991913,
+        "hypothesis": "\"But don't these very wise things sometimes turn out very foolishly?\"",
+        "edits": 0
+      }
+    },
+    {
+      "id": "other-533-1066-0014",
+      "audio_seconds": 2.47,
+      "reference": "I ASKED NO QUESTIONS",
+      "order": [
+        "old",
+        "new"
+      ],
+      "old": {
+        "seconds": 3.371900939004263,
+        "hypothesis": "I ask no questions.",
+        "edits": 1
+      },
+      "new": {
+        "seconds": 3.4438534249784425,
+        "hypothesis": "I ask no questions.",
+        "edits": 1
+      }
+    },
+    {
+      "id": "other-3538-163622-0005",
+      "audio_seconds": 5.91,
+      "reference": "THEN THE KING PROMISED HIM THE SAME PUNISHMENT AND THE SAME REWARD THAT HE HAD PROMISED HIS BROTHER",
+      "order": [
+        "new",
+        "old"
+      ],
+      "new": {
+        "seconds": 2.7676719380251598,
+        "hypothesis": "then the king promised him the same punishment and the same reward that he had promised his brother",
+        "edits": 0
+      },
+      "old": {
+        "seconds": 2.976341271016281,
+        "hypothesis": "then the king promised him the same punishment and the same reward that he had promised his brother",
+        "edits": 0
+      }
+    },
+    {
+      "id": "other-4852-28312-0003",
+      "audio_seconds": 4.055,
+      "reference": "HEAVY HAND HEWN BEAMS CROSSED IT FROM ONE SIDE TO THE OTHER",
+      "order": [
+        "old",
+        "new"
+      ],
+      "old": {
+        "seconds": 3.0686997570155654,
+        "hypothesis": "heavy hand-hewn beams crossed it from one side to the other",
+        "edits": 0
+      },
+      "new": {
+        "seconds": 3.1782146459736396,
+        "hypothesis": "heavy hand-hewn beams crossed it from one side to the other",
+        "edits": 0
+      }
+    },
+    {
+      "id": "other-8188-269288-0057",
+      "audio_seconds": 5.46,
+      "reference": "OH THIS WILL KILL ME MY HEART WILL BREAK THIS WILL KILL ME",
+      "order": [
+        "new",
+        "old"
+      ],
+      "new": {
+        "seconds": 2.861297506984556,
+        "hypothesis": "Oh, this will kill me. My heart will break. This will kill me.",
+        "edits": 0
+      },
+      "old": {
+        "seconds": 3.1403615250019357,
+        "hypothesis": "Oh, this will kill me. My heart will break. This will kill me.",
+        "edits": 0
+      }
+    }
+  ],
+  "idle": {
+    "whisper": {
+      "id": "clean-6930-75918-0000",
+      "reference": "CONCORD RETURNED TO ITS PLACE AMIDST THE TENTS",
+      "audio_seconds": 3.505,
+      "rows": [
+        {
+          "idle_seconds": 0,
+          "elapsed_seconds": 1.844771121017402,
+          "hypothesis": "Concord returned to its place amidst the tents.",
+          "memory_kib": {
+            "VmHWM": 124424,
+            "VmRSS": 93788,
+            "drm-total-gtt": 40504,
+            "drm-resident-gtt": 1194500,
+            "drm-total-vram": 1171924,
+            "drm-resident-vram": 17928,
+            "drm-memory-vram": 17928,
+            "drm-memory-gtt": 1194500,
+            "drm-memory-cpu": 0
+          }
+        },
+        {
+          "idle_seconds": 10,
+          "elapsed_seconds": 1.802893084997777,
+          "hypothesis": "Concord returned to its place amidst the tents.",
+          "memory_kib": {
+            "VmHWM": 124424,
+            "VmRSS": 94596,
+            "drm-total-gtt": 40504,
+            "drm-resident-gtt": 1194500,
+            "drm-total-vram": 1171924,
+            "drm-resident-vram": 17928,
+            "drm-memory-vram": 17928,
+            "drm-memory-gtt": 1194500,
+            "drm-memory-cpu": 0
+          }
+        },
+        {
+          "idle_seconds": 30,
+          "elapsed_seconds": 1.9096468029893003,
+          "hypothesis": "Concord returned to its place amidst the tents.",
+          "memory_kib": {
+            "VmHWM": 124424,
+            "VmRSS": 94600,
+            "drm-total-gtt": 40504,
+            "drm-resident-gtt": 1194500,
+            "drm-total-vram": 1171924,
+            "drm-resident-vram": 17928,
+            "drm-memory-vram": 17928,
+            "drm-memory-gtt": 1194500,
+            "drm-memory-cpu": 0
+          }
+        }
+      ]
+    },
+    "parakeet": {
+      "id": "clean-6930-75918-0000",
+      "reference": "CONCORD RETURNED TO ITS PLACE AMIDST THE TENTS",
+      "audio_seconds": 3.505,
+      "rows": [
+        {
+          "idle_seconds": 0,
+          "elapsed_seconds": 0.13499538498581387,
+          "hypothesis": "Concord returned to its place amidst the tents,",
+          "memory_kib": {
+            "VmHWM": 84312,
+            "VmRSS": 84312,
+            "drm-total-gtt": 64312,
+            "drm-resident-gtt": 779668,
+            "drm-total-vram": 744716,
+            "drm-resident-vram": 29360,
+            "drm-memory-vram": 29360,
+            "drm-memory-gtt": 779668,
+            "drm-memory-cpu": 0
+          }
+        },
+        {
+          "idle_seconds": 10,
+          "elapsed_seconds": 0.12864812000771053,
+          "hypothesis": "Concord returned to its place amidst the tents,",
+          "memory_kib": {
+            "VmHWM": 84312,
+            "VmRSS": 84312,
+            "drm-total-gtt": 64312,
+            "drm-resident-gtt": 779668,
+            "drm-total-vram": 744716,
+            "drm-resident-vram": 29360,
+            "drm-memory-vram": 29360,
+            "drm-memory-gtt": 779668,
+            "drm-memory-cpu": 0
+          }
+        },
+        {
+          "idle_seconds": 30,
+          "elapsed_seconds": 0.13394467500620522,
+          "hypothesis": "Concord returned to its place amidst the tents,",
+          "memory_kib": {
+            "VmHWM": 84312,
+            "VmRSS": 84312,
+            "drm-total-gtt": 64312,
+            "drm-resident-gtt": 779668,
+            "drm-total-vram": 744716,
+            "drm-resident-vram": 29360,
+            "drm-memory-vram": 29360,
+            "drm-memory-gtt": 779668,
+            "drm-memory-cpu": 0
+          }
+        }
+      ]
+    }
+  },
+  "manifest_sha256": "67f1332073db019f8cad92f86fa4f82a555af8b399da2acf2ff3d49be3911688",
+  "load_start": "4.21 4.60 6.13 10/2237 476364",
+  "cli_median_new_over_old": 0.9756147528220701,
+  "load_end": "5.20 4.77 5.96 5/2310 505112",
+  "original_manifest_sha256": "e83833f5f3ba083ab24ca2df8b8a95cff92e0d44b301a3e067d210b2085f018c",
+  "manifest_note": "Audio paths normalized to manifest-relative filenames after measurement; original hash retained. Audio SHA-256, references, hypotheses and timings are unchanged."
+}

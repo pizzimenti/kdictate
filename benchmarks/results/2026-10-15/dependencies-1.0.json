@@ -1,0 +1,380 @@
+{
+  "version": "1.0.0",
+  "python": "3.14.7",
+  "audit": [
+    {
+      "name": "PyGObject",
+      "tested": "3.58.1",
+      "latest_stable": "3.58.1",
+      "up_to_date": true
+    },
+    {
+      "name": "PyYAML",
+      "tested": "6.0.3",
+      "latest_stable": "6.0.3",
+      "up_to_date": true
+    },
+    {
+      "name": "Pygments",
+      "tested": "2.21.0",
+      "latest_stable": "2.21.0",
+      "up_to_date": true
+    },
+    {
+      "name": "anyio",
+      "tested": "4.15.1",
+      "latest_stable": "4.15.1",
+      "up_to_date": true
+    },
+    {
+      "name": "av",
+      "tested": "18.1.0",
+      "latest_stable": "19.0.1",
+      "up_to_date": false
+    },
+    {
+      "name": "build",
+      "tested": "1.6.1",
+      "latest_stable": "1.6.1",
+      "up_to_date": true
+    },
+    {
+      "name": "cffi",
+      "tested": "2.1.1",
+      "latest_stable": "2.1.1",
+      "up_to_date": true
+    },
+    {
+      "name": "click",
+      "tested": "8.5.0",
+      "latest_stable": "8.5.0",
+      "up_to_date": true
+    },
+    {
+      "name": "ctranslate2",
+      "tested": "4.8.3",
+      "latest_stable": "4.8.3",
+      "up_to_date": true
+    },
+    {
+      "name": "faster-whisper",
+      "tested": "1.2.1",
+      "latest_stable": "1.2.1",
+      "up_to_date": true
+    },
+    {
+      "name": "filelock",
+      "tested": "4.2.0",
+      "latest_stable": "4.2.0",
+      "up_to_date": true
+    },
+    {
+      "name": "flatbuffers",
+      "tested": "25.12.19",
+      "latest_stable": "25.12.19",
+      "up_to_date": true
+    },
+    {
+      "name": "fsspec",
+      "tested": "2026.9.0",
+      "latest_stable": "2026.9.0",
+      "up_to_date": true
+    },
+    {
+      "name": "h11",
+      "tested": "0.16.0",
+      "latest_stable": "0.16.0",
+      "up_to_date": true
+    },
+    {
+      "name": "hf-xet",
+      "tested": "1.7.0",
+      "latest_stable": "1.7.0",
+      "up_to_date": true
+    },
+    {
+      "name": "httpcore2",
+      "tested": "2.13.1",
+      "latest_stable": "2.13.1",
+      "up_to_date": true
+    },
+    {
+      "name": "httpx2",
+      "tested": "2.13.1",
+      "latest_stable": "2.13.1",
+      "up_to_date": true
+    },
+    {
+      "name": "huggingface_hub",
+      "tested": "2.2.0",
+      "latest_stable": "2.2.0",
+      "up_to_date": true
+    },
+    {
+      "name": "idna",
+      "tested": "3.20",
+      "latest_stable": "3.20",
+      "up_to_date": true
+    },
+    {
+      "name": "iniconfig",
+      "tested": "2.3.1",
+      "latest_stable": "2.3.1",
+      "up_to_date": true
+    },
+    {
+      "name": "installer",
+      "tested": "1.1.0",
+      "latest_stable": "1.1.0",
+      "up_to_date": true
+    },
+    {
+      "name": "numpy",
+      "tested": "2.5.4",
+      "latest_stable": "2.5.4",
+      "up_to_date": true
+    },
+    {
+      "name": "onnxruntime",
+      "tested": "1.31.0",
+      "latest_stable": "1.31.0",
+      "up_to_date": true
+    },
+    {
+      "name": "packaging",
+      "tested": "26.3",
+      "latest_stable": "26.3",
+      "up_to_date": true
+    },
+    {
+      "name": "pluggy",
+      "tested": "1.7.0",
+      "latest_stable": "1.7.0",
+      "up_to_date": true
+    },
+    {
+      "name": "protobuf",
+      "tested": "7.36.2",
+      "latest_stable": "7.36.2",
+      "up_to_date": true
+    },
+    {
+      "name": "psutil",
+      "tested": "7.2.2",
+      "latest_stable": "7.2.2",
+      "up_to_date": true
+    },
+    {
+      "name": "pyarrow",
+      "tested": "26.0.0",
+      "latest_stable": "26.0.0",
+      "up_to_date": true
+    },
+    {
+      "name": "pycairo",
+      "tested": "1.29.2",
+      "latest_stable": "1.29.2",
+      "up_to_date": true
+    },
+    {
+      "name": "pycparser",
+      "tested": "3.11",
+      "latest_stable": "3.11",
+      "up_to_date": true
+    },
+    {
+      "name": "pyproject_hooks",
+      "tested": "1.3.3",
+      "latest_stable": "1.3.3",
+      "up_to_date": true
+    },
+    {
+      "name": "pytest",
+      "tested": "9.1.1",
+      "latest_stable": "9.1.1",
+      "up_to_date": true
+    },
+    {
+      "name": "setuptools",
+      "tested": "84.0.0",
+      "latest_stable": "84.0.0",
+      "up_to_date": true
+    },
+    {
+      "name": "sounddevice",
+      "tested": "0.5.6",
+      "latest_stable": "0.5.6",
+      "up_to_date": true
+    },
+    {
+      "name": "tokenizers",
+      "tested": "0.23.3",
+      "latest_stable": "0.23.3",
+      "up_to_date": true
+    },
+    {
+      "name": "tqdm",
+      "tested": "4.70.1",
+      "latest_stable": "4.70.1",
+      "up_to_date": true
+    },
+    {
+      "name": "truststore",
+      "tested": "0.10.5",
+      "latest_stable": "0.10.5",
+      "up_to_date": true
+    },
+    {
+      "name": "typing_extensions",
+      "tested": "4.16.0",
+      "latest_stable": "4.16.0",
+      "up_to_date": true
+    },
+    {
+      "name": "wheel",
+      "tested": "0.48.0",
+      "latest_stable": "0.48.0",
+      "up_to_date": true
+    }
+  ],
+  "constraints_sha256": "3a7900628135d72b58524abb6f42e24a1a89596dc3e219e764bfe5cf5a014f05",
+  "package": "kdictate-1.0.0-1-x86_64.pkg.tar.zst",
+  "package_sha256": "bb1fb0461d599b71914e0346b1df5b4de0cfaaad501180dd4f2f5ddb8ba43c34",
+  "packaged_dependencies": {
+    "faster-whisper": "1.2.1",
+    "tokenizers": "0.23.3",
+    "huggingface_hub": "2.2.0",
+    "httpx2": "2.13.1",
+    "sounddevice": "0.5.6",
+    "anyio": "4.15.1",
+    "cffi": "2.1.1",
+    "ctranslate2": "4.8.3",
+    "httpcore2": "2.13.1",
+    "onnxruntime": "1.31.0",
+    "av": "18.1.0",
+    "click": "8.5.0",
+    "filelock": "4.2.0",
+    "fsspec": "2026.9.0",
+    "h11": "0.16.0",
+    "hf-xet": "1.7.0",
+    "idna": "3.20",
+    "numpy": "2.5.4",
+    "packaging": "26.3",
+    "protobuf": "7.36.2",
+    "psutil": "7.2.2",
+    "pycparser": "3.11",
+    "PyYAML": "6.0.3",
+    "tqdm": "4.70.1",
+    "truststore": "0.10.5",
+    "typing_extensions": "4.16.0",
+    "flatbuffers": "25.12.19"
+  },
+  "baseline_dependencies": {
+    "faster-whisper": "1.2.1",
+    "flatbuffers": "25.12.19",
+    "huggingface_hub": "0.36.2",
+    "psutil": "6.1.1",
+    "PyYAML": "6.0.3",
+    "requests": "2.34.2",
+    "certifi": "2026.7.22",
+    "cffi": "2.1.1",
+    "packaging": "26.3",
+    "typing_extensions": "4.16.0",
+    "av": "19.0.1",
+    "charset-normalizer": "3.5.2",
+    "ctranslate2": "4.8.3",
+    "filelock": "4.2.0",
+    "fsspec": "2026.9.0",
+    "hf-xet": "1.7.0",
+    "idna": "3.20",
+    "numpy": "2.5.4",
+    "onnxruntime": "1.31.0",
+    "protobuf": "7.36.2",
+    "pycparser": "3.11",
+    "sounddevice": "0.5.6",
+    "tokenizers": "0.23.3",
+    "tqdm": "4.70.1",
+    "urllib3": "2.8.0"
+  },
+  "system_packages": [
+    "python 3.14.7-1",
+    "python-gobject 3.56.3-1",
+    "libnotify 0.8.8-1",
+    "ibus 1.5.34-1",
+    "portaudio 1:19.7.0-4",
+    "vulkan-icd-loader 1.4.357.0-1",
+    "vulkan-radeon 1:26.2.2-1",
+    "cmake 4.4.3-2",
+    "shaderc 2026.3-1",
+    "vulkan-headers 1:1.4.357.0-1"
+  ],
+  "validation": {
+    "source_tests": 271,
+    "distro_tests": 271,
+    "subtests_per_suite": 26,
+    "pip_check": "passed",
+    "cpu": {
+      "model": "tiny.en (cached integration smoke)",
+      "reference": "CONCORD RETURNED TO ITS PLACE AMIDST THE TENTS",
+      "wav_hypothesis": "Concord returned to its place amidst the tents.",
+      "elapsed_seconds": 1.4022941750008613,
+      "pcm_hypothesis": "Concord returned to its place amidst the tents.",
+      "pygobject": "3.58.1",
+      "threads": 6,
+      "portaudio": [
+        1246976,
+        "PortAudio V19.7.0-devel, revision unknown"
+      ],
+      "input_device_count": 4
+    },
+    "hub2": "Pinned GPU repo downloads, CPU snapshot metadata and 75 MB model download with matching checksum passed",
+    "native_daemons": {
+      "source": {
+        "whisper": {
+          "engine": "whisper",
+          "worker_pid": 924517,
+          "load_seconds": 0.8823510769871064,
+          "daemon_ready": true,
+          "worker_reaped": true,
+          "exit_code": 0
+        },
+        "parakeet": {
+          "engine": "parakeet",
+          "worker_pid": 924931,
+          "load_seconds": 2.1685026960039977,
+          "daemon_ready": true,
+          "worker_reaped": true,
+          "exit_code": 0
+        }
+      },
+      "distro": {
+        "whisper": {
+          "engine": "whisper",
+          "worker_pid": 925194,
+          "load_seconds": 0.606577038008254,
+          "daemon_ready": true,
+          "worker_reaped": true,
+          "exit_code": 0
+        },
+        "parakeet": {
+          "engine": "parakeet",
+          "worker_pid": 926041,
+          "load_seconds": 1.0382791160081979,
+          "daemon_ready": true,
+          "worker_reaped": true,
+          "exit_code": 0
+        }
+      }
+    },
+    "source_native_copy": "Constraints copied and relocated native libraries transcribed a human clip successfully",
+    "review_regressions": "Last-request worker crash preserves completed metrics; missing-memory reports render; stale idle/mixed-manifest data is excluded; backend defaults and explicit beam overrides are honored.",
+    "gpu_beam_overrides": "Actual GPU transcription passed with explicit beam sizes 1 and 5; GPU default remains 3.",
+    "final_corpus": "Both final resident engines repeated all 62 candidate hypotheses exactly with the constrained runtime dependencies; zero decode failures and silence output."
+  },
+  "exceptions": [
+    "PyAV 19.0.1 is incompatible with faster-whisper 1.2.1; use 18.1.0 until its av.open call is updated.",
+    "Packaged PyGObject/GLib/IBus/PortAudio/Vulkan are distro-managed. Source PyGObject 3.58.1 and distro 3.56.3 both passed.",
+    "Python 3.11 compatibility was resolved universally; execution tests used Python 3.14.7.",
+    "Live microphone and desktop insertion remain for the user to validate after manual installation."
+  ]
+}
