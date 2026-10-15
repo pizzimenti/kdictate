@@ -9,7 +9,7 @@ import time
 
 import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from benchmarks.run import pcm, words, edit_distance, process_memory
+from benchmarks.run import pcm, words, edit_distance, process_memory, load_manifest
 from kdictate.backend import WhisperCppBackend
 from kdictate.resident_backend import ResidentBackend
 
@@ -23,7 +23,7 @@ def main():
     parser.add_argument('--parakeet-model', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    samples = json.loads(args.manifest.read_text())['samples']
+    samples = load_manifest(args.manifest)['samples']
     for sample in samples:
         assert hashlib.sha256(Path(sample['path']).read_bytes()).hexdigest() == sample['sha256']
     short = [s for s in samples if s['reference'] and s['seconds']<=10]

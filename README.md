@@ -39,7 +39,7 @@ pip install -c constraints.txt -r requirements-dev.txt
 
 ### System dictation daemon
 
-On Arch/Manjaro, `install.py` handles everything — dependencies, venv, model
+On Arch/Manjaro, `install.py` handles everything — dependencies, venv,
 selected-model download from Hugging Face, systemd/D-Bus/IBus
 registration, and KDE integration:
 
@@ -191,7 +191,7 @@ See `docs/gpu-mode.md` for architecture details and benchmark results.
 - `--cpu-threads N`: override thread count. Dictation-oriented defaults now use physical cores / short-form-friendly thread counts.
 - `--compute-type int8|float16|float32`: precision/runtime tradeoff.
 - `--language`: defaults to `en`.
-- `--beam-size`: daemon and live CLI default to 1.
+- `--beam-size`: Whisper CPU defaults to 1 and Whisper GPU to 3; explicit values override the default.
 - `--state-file`: daemon runtime state file path (default: `$XDG_RUNTIME_DIR/kdictate-<uid>.state`).
 - `--last-text-file`: latest transcript cache path (default: `$XDG_RUNTIME_DIR/kdictate-<uid>.last.txt`).
 - `--vad-filter/--no-vad-filter`: daemon defaults to `vad_filter=True` to catch silence before the encoder.

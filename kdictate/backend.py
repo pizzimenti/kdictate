@@ -219,7 +219,8 @@ def create_gpu_backend(config: Any) -> ResidentBackend | None:
     try:
         import numpy as np
         backend = ResidentBackend(binary, model_path, engine=engine, language=config.language,
-                                  n_threads=config.cpu_threads, no_speech_threshold=config.no_speech_threshold)
+                                  n_threads=config.cpu_threads, beam_size=config.beam_size,
+                                  no_speech_threshold=config.no_speech_threshold)
         # Compile/allocate the decode path at startup, before the first toggle.
         backend.transcribe([np.zeros(16000, dtype=np.int16)], 1.0)
     except TranscriptionError as exc:

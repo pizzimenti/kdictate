@@ -239,7 +239,7 @@
   ],
   "constraints_sha256": "3a7900628135d72b58524abb6f42e24a1a89596dc3e219e764bfe5cf5a014f05",
   "package": "kdictate-1.0.0-1-x86_64.pkg.tar.zst",
-  "package_sha256": "738ea8d3d39f30d38a3137003c89a67c753952330021208115f8b02db36f5298",
+  "package_sha256": "bb1fb0461d599b71914e0346b1df5b4de0cfaaad501180dd4f2f5ddb8ba43c34",
   "packaged_dependencies": {
     "faster-whisper": "1.2.1",
     "tokenizers": "0.23.3",
@@ -309,8 +309,8 @@
     "vulkan-headers 1:1.4.357.0-1"
   ],
   "validation": {
-    "source_tests": 260,
-    "distro_tests": 260,
+    "source_tests": 271,
+    "distro_tests": 271,
     "subtests_per_suite": 26,
     "pip_check": "passed",
     "cpu": {
@@ -366,7 +366,10 @@
         }
       }
     },
-    "source_native_copy": "Constraints copied and relocated native libraries transcribed a human clip successfully"
+    "source_native_copy": "Constraints copied and relocated native libraries transcribed a human clip successfully",
+    "review_regressions": "Last-request worker crash preserves completed metrics; missing-memory reports render; stale idle/mixed-manifest data is excluded; backend defaults and explicit beam overrides are honored.",
+    "gpu_beam_overrides": "Actual GPU transcription passed with explicit beam sizes 1 and 5; GPU default remains 3.",
+    "final_corpus": "Both final resident engines repeated all 62 candidate hypotheses exactly with the constrained runtime dependencies; zero decode failures and silence output."
   },
   "exceptions": [
     "PyAV 19.0.1 is incompatible with faster-whisper 1.2.1; use 18.1.0 until its av.open call is updated.",

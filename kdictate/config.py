@@ -47,7 +47,8 @@ class DictationConfig:
             model_dir=Path(namespace.model_dir),
             language=namespace.language,
             sample_rate=namespace.sample_rate,
-            beam_size=namespace.beam_size,
+            beam_size=(namespace.beam_size if namespace.beam_size is not None
+                       else int(daemon_arg_defaults(namespace.backend)["beam_size"])),
             condition_on_previous_text=namespace.condition_on_previous_text,
             vad_filter=namespace.vad_filter,
             no_speech_threshold=namespace.no_speech_threshold,
@@ -88,7 +89,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--language", default=defaults["language"], help="Language code for transcription.")
     parser.add_argument("--sample-rate", type=int, default=defaults["sample_rate"], help="Microphone sample rate.")
-    parser.add_argument("--beam-size", type=int, default=defaults["beam_size"], help="Whisper beam size.")
+    parser.add_argument("--beam-size", type=int, default=None,
+                        help="Whisper beam size (default: CPU 1, GPU 3).")
     parser.add_argument(
         "--condition-on-previous-text",
         action=argparse.BooleanOptionalAction,

@@ -6,14 +6,14 @@ from kdictate.app_metadata import DEFAULT_MODEL_DIR
 from kdictate.runtime_profile import recommended_shortform_cpu_threads
 
 
-def daemon_arg_defaults() -> dict[str, object]:
+def daemon_arg_defaults(backend: str = "cpu") -> dict[str, object]:
     """Return the daemon argument defaults."""
 
     return {
         "model_dir": str(DEFAULT_MODEL_DIR),
         "language": "en",
         "sample_rate": 16000,
-        "beam_size": 1,
+        "beam_size": 3 if backend == "gpu" else 1,
         "condition_on_previous_text": False,
         "vad_filter": True,
         "no_speech_threshold": 0.6,

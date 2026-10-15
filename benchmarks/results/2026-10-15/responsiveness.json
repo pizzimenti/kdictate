@@ -265,8 +265,10 @@
       ]
     }
   },
-  "manifest_sha256": "e83833f5f3ba083ab24ca2df8b8a95cff92e0d44b301a3e067d210b2085f018c",
+  "manifest_sha256": "67f1332073db019f8cad92f86fa4f82a555af8b399da2acf2ff3d49be3911688",
   "load_start": "4.21 4.60 6.13 10/2237 476364",
   "cli_median_new_over_old": 0.9756147528220701,
-  "load_end": "5.20 4.77 5.96 5/2310 505112"
+  "load_end": "5.20 4.77 5.96 5/2310 505112",
+  "original_manifest_sha256": "e83833f5f3ba083ab24ca2df8b8a95cff92e0d44b301a3e067d210b2085f018c",
+  "manifest_note": "Audio paths normalized to manifest-relative filenames after measurement; original hash retained. Audio SHA-256, references, hypotheses and timings are unchanged."
 }

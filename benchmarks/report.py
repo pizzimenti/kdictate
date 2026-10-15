@@ -37,6 +37,8 @@ def paired_interval(left, right):
 
 def report(paths, output):
     results = [json.loads(p.read_text()) for p in paths]
+    if len({r['manifest_sha256'] for r in results}) != 1:
+        raise ValueError('Cannot compare results from different audio manifests')
     parts = ['''<!doctype html><html lang="en"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>KDictate 1.0 speech comparison</title><style>
@@ -88,18 +90,21 @@ summary{cursor:pointer;font-weight:600} code{overflow-wrap:anywhere;font-size:13
     parts.append('<h2>Startup and retained memory</h2><table><tr><th>Configuration</th><th>Model load</th><th>Warmup</th><th>Idle RSS</th><th>Peak RSS</th><th>Silence with text</th></tr>')
     for r in results:
         resident = r['mode']=='resident'
-        idle = f'{r["idle_memory_kib"]["VmRSS"]/1024:.0f} MiB' if resident else 'process exits'
-        peak = (r['end_memory_kib']['VmHWM'] if resident else r['child_maxrss_kib'])/1024
+        idle_memory = r.get('idle_memory_kib') or {}
+        end_memory = r.get('end_memory_kib') or {}
+        idle = (f'{idle_memory["VmRSS"]/1024:.0f} MiB' if 'VmRSS' in idle_memory else 'unavailable') if resident else 'process exits'
+        peak = end_memory.get('VmHWM') if resident else r.get('child_maxrss_kib')
+        peak_text = f'{peak/1024:.0f} MiB' if peak is not None else 'unavailable'
         startup = f'{r["startup_seconds"]:.3f}s' if resident else 'in each decode'
         warmup = f'{r.get("warmup_seconds",0):.3f}s' if resident else 'in each decode'
         parts.append(f'<tr><td>{h(r["name"])}</td><td>{startup}</td><td>{warmup}</td><td>{idle}</td>'
-                     f'<td>{peak:.0f} MiB</td><td>{r["summary"]["silence"]["nonempty"]}/2</td></tr>')
+                     f'<td>{peak_text}</td><td>{r["summary"]["silence"]["nonempty"]}/2</td></tr>')
     parts.append('</table><p>RSS is Linux process memory, not a complete GPU allocation measure. Shared memory and device memory accounting vary. '
                  'A resident model keeps these allocations while idle until the daemon stops.</p>')
     followup = output.parent/'responsiveness.json'
     if followup.exists():
         check = json.loads(followup.read_text())
-        if check.get('load_end'):
+        if check.get('load_end') and check.get('manifest_sha256') == results[0]['manifest_sha256']:
             ratio=check['cli_median_new_over_old']
             parts.append('<h2>Idle response and timing cross-check</h2>'
                 f'<p>Eight short clips were tested again with old/new CLI order alternating between clips. '
@@ -145,6 +150,10 @@ summary{cursor:pointer;font-weight:600} code{overflow-wrap:anywhere;font-size:13
                  f'Pinned dataset revision: <code>{results[0]["dataset_revision"]}</code>. '
                  'Uniform row offsets from test-clean and test-other; no accuracy-based filtering. All configurations run serially. '
                  'Retained JSON includes every hypothesis, timing, error, host load and memory snapshot.</p>')
+    if any(r.get('original_manifest_sha256') for r in results):
+        parts.append('<p>Recorded audio paths were normalized to manifest-relative filenames for portability. '
+            'Original manifest hashes are retained in the raw JSON; audio checksums, references, hypotheses and timings are unchanged. '
+            'Generate the audio and its manifest with prepare_audio.py before rerunning the benchmark.</p>')
     parts.append('<footer>LibriSpeech: Vassil Panayotov, Guoguo Chen, Daniel Povey and Sanjeev Khudanpur (2015); recordings from LibriVox. '
                  '<a href="https://www.openslr.org/12">Dataset and attribution</a>, '
                  '<a href="https://creativecommons.org/licenses/by/4.0/">CC BY 4.0</a>. '

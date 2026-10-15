@@ -47,7 +47,7 @@ def prepare(root: Path, per_split: int, parquet_root: Path) -> Path:
                            input=record["audio"]["bytes"], check=True)
             with wave.open(str(output)) as audio:
                 duration = audio.getnframes()/audio.getframerate()
-            rows.append(dict(id=name, group=split, path=str(output), reference=record["text"],
+            rows.append(dict(id=name, group=split, path=output.name, reference=record["text"],
                              speaker=int(record["speaker_id"]), seconds=duration,
                              sha256=hashlib.sha256(output.read_bytes()).hexdigest(),
                              source=f"{SOURCE}/blob/{REVISION}/{filename}"))
@@ -58,7 +58,7 @@ def prepare(root: Path, per_split: int, parquet_root: Path) -> Path:
         with wave.open(str(path), "wb") as audio:
             audio.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
             audio.writeframes(bytes(seconds * 16000 * 2))
-        rows.append(dict(id=path.stem, group="silence", path=str(path), reference="", seconds=seconds,
+        rows.append(dict(id=path.stem, group="silence", path=path.name, reference="", seconds=seconds,
                          sha256=hashlib.sha256(path.read_bytes()).hexdigest(), source="generated digital silence"))
     manifest = root / "manifest.json"
     manifest.write_text(json.dumps(dict(dataset=SOURCE, revision=REVISION, license="CC-BY-4.0",

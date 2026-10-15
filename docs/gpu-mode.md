@@ -75,6 +75,11 @@ test-clean and test-other audio with published transcripts. The preparation
 script selects 30 uniformly spaced rows from each pinned split, verifies the
 source archives, and writes a manifest containing per-clip audio hashes. Two
 digital silence clips are scored separately for unwanted text.
+Audio paths are relative to the generated manifest, so the audio directory can
+be moved between machines. The checked-in manifest records the corpus; generate
+the WAV files with the preparation script and pass its generated manifest to
+the runner. Historical results retain their original manifest hash alongside
+the normalized hash after path-only portability edits.
 
 ```bash
 .venv/bin/pip install -c constraints.txt -r requirements-benchmarks.txt

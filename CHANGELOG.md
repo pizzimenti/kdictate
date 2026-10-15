@@ -9,6 +9,8 @@
   crashed or unresponsive workers.
 - Add Parakeet TDT 0.6B v3 Q8_0 as an installer option alongside Whisper GPU
   and Whisper CPU. Keep Whisper as the default and existing `gpu` flags valid.
+- Honor explicit Whisper GPU beam-size settings while preserving the tuned
+  default of three beams (CPU remains at one).
 - Pin GPU model revisions and verify SHA-256 before accepting downloads.
 - Update Hub to 2.2, psutil to 7.2 and pytest to 9.1; resolve and constrain
   runtime, build and benchmark dependencies to the tested releases. Keep PyAV

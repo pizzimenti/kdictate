@@ -77,6 +77,7 @@ def test_gpu_runtime_loads_and_warms_only_selected_model(tmp_path, selected, eng
         assert result is resident.return_value
         assert resident.call_args.args == ('/worker', model)
         assert resident.call_args.kwargs['engine'] == engine
+        assert resident.call_args.kwargs['beam_size'] == config.beam_size
         resident.return_value.transcribe.assert_called_once()
 
 
@@ -95,3 +96,22 @@ def test_warmup_failure_closes_worker(tmp_path):
         resident.return_value.transcribe.side_effect = TranscriptionError('GPU failure')
         assert backend.create_gpu_backend(config) is None
         resident.return_value.close.assert_called_once()
+
+
+@pytest.mark.parametrize('selected,explicit,expected', [
+    ('cpu', None, 1), ('gpu', None, 3), ('gpu', 1, 1), ('gpu', 5, 5), ('cpu', 3, 3),
+])
+def test_backend_beam_defaults_and_explicit_overrides(selected, explicit, expected):
+    argv = ['--backend', selected]
+    if explicit is not None:
+        argv += ['--beam-size', str(explicit)]
+    assert DictationConfig.from_namespace(parse_args(argv)).beam_size == expected
+
+
+def test_gpu_factory_forwards_explicit_beam_size(tmp_path):
+    model = tmp_path/'model.bin'
+    model.touch()
+    config = DictationConfig.from_namespace(parse_args(['--backend', 'gpu', '--beam-size', '5']))
+    with mock.patch.object(backend, 'find_stt_worker', return_value='/worker'), mock.patch.object(backend, 'GGML_MODEL_PATH', model), mock.patch.object(backend, 'ResidentBackend') as resident:
+        assert backend.create_gpu_backend(config) is resident.return_value
+        assert resident.call_args.kwargs['beam_size'] == 5

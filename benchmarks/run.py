@@ -74,6 +74,29 @@ def process_memory(pid: int) -> dict[str, int]:
     return result
 
 
+def worker_memory(backend: ResidentBackend) -> dict[str, int] | None:
+    """A failed request may already have reaped the worker."""
+    process = backend._process
+    if process is None or process.poll() is not None:
+        return None
+    try:
+        return process_memory(process.pid)
+    except OSError:
+        # The worker can exit between poll() and reading /proc.
+        return None
+
+
+def load_manifest(path: Path) -> dict:
+    """Resolve portable audio paths against the manifest, independent of cwd."""
+    manifest = json.loads(path.read_text())
+    for sample in manifest["samples"]:
+        audio = Path(sample["path"])
+        if not audio.is_absolute():
+            audio = (path.parent / audio).resolve()
+        sample["path"] = str(audio)
+    return manifest
+
+
 def vulkan_summary() -> str:
     try:
         info = subprocess.run(["vulkaninfo", "--summary"], capture_output=True, text=True, timeout=10)
@@ -98,7 +121,7 @@ def main():
     args = parser.parse_args()
     if args.repeat < 1 or (args.limit is not None and args.limit < 1):
         parser.error("--repeat and --limit must be positive")
-    manifest = json.loads(args.manifest.read_text())
+    manifest = load_manifest(args.manifest)
     samples = manifest["samples"][:args.limit] if args.limit else manifest["samples"]
     for sample in samples:
         if hashlib.sha256(Path(sample["path"]).read_bytes()).hexdigest() != sample["sha256"]:
@@ -128,7 +151,7 @@ def main():
                 started = time.perf_counter()
                 backend.transcribe([np.zeros(16000, dtype=np.int16)], 1.0)
                 result["warmup_seconds"] = time.perf_counter() - started
-            result["idle_memory_kib"] = process_memory(backend._process.pid)
+            result["idle_memory_kib"] = worker_memory(backend)
         elif args.engine == "whisper":
             backend = WhisperCppBackend(args.binary, args.model)
         for repeat in range(args.repeat):
@@ -170,7 +193,7 @@ def main():
                 failures=sum(r["error"] is not None for r in rows),
                 nonempty=sum(bool(r["hypothesis"]) for r in rows))
         if args.mode == "resident":
-            result["end_memory_kib"] = process_memory(backend._process.pid)
+            result["end_memory_kib"] = worker_memory(backend)
         else:
             result["child_maxrss_kib"] = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
         result["load_end"] = Path("/proc/loadavg").read_text().strip()
