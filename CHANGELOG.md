@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.18.1
+
+### Fixed
+
+- Retract the "KDictate still recording" warning when recording stops,
+  the confirmation times out, Continue is clicked, or the daemon shuts down.
+  Explicitly close the notification by its ID; terminating `notify-send`
+  alone leaves the critical popup visible. Mark the warning transient so
+  an expired recording prompt is not kept in notification history.
+- Prevent a delayed warning or response from stopping a new recording
+  after a quick stop/start.
+
 ## 0.18.0
 
 Root-causes and fixes the "every install breaks dictation until reboot"
