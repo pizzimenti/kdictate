@@ -15,7 +15,7 @@
 # so one package, compiled once, runs across Ryzen Zen 2 -> Zen 5.
 
 pkgname=kdictate
-pkgver=1.0.0rc1
+pkgver=1.0.0
 pkgrel=1
 
 # The ONLY knob controlling the GPU transcription stack. Bump it
@@ -78,6 +78,7 @@ build() {
   rm -rf "${srcdir}/vendor"
   python -m pip install \
     --target "${srcdir}/vendor" \
+    --constraint constraints.txt \
     --requirement packaging/vendor-requirements.txt \
     --only-binary=:all: \
     --disable-pip-version-check \

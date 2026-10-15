@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.0rc1 (unreleased)
+## 1.0.0 (2026-10-15)
 
 - Upgrade the private Vulkan speech stack from whisper.cpp 1.8.6 to 1.9.5.
   Whisper large-v3-turbo Q8_0 weights stay unchanged.
@@ -10,6 +10,11 @@
 - Add Parakeet TDT 0.6B v3 Q8_0 as an installer option alongside Whisper GPU
   and Whisper CPU. Keep Whisper as the default and existing `gpu` flags valid.
 - Pin GPU model revisions and verify SHA-256 before accepting downloads.
+- Update Hub to 2.2, psutil to 7.2 and pytest to 9.1; resolve and constrain
+  runtime, build and benchmark dependencies to the tested releases. Keep PyAV
+  on 18.1 because faster-whisper 1.2.1 uses an API removed in PyAV 19.
+- Verify source installs with PyGObject 3.58 and packaged installs with the
+  distro-provided bindings; system libraries remain managed by the distro.
 - Add reproducible LibriSpeech accuracy/latency benchmarks, silence checks,
   and tests for worker failures, model selection and installer configuration.
 - On the Radeon 760M test host, 60 speech clips gave median decode times of

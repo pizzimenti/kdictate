@@ -1,4 +1,4 @@
-# KDictate GPU mode (1.0 release candidate)
+# KDictate GPU mode (1.0)
 
 Choose Whisper GPU, Whisper CPU, or Parakeet GPU in `python3 install.py`.
 Whisper remains the installer default when Vulkan is available. The installer
@@ -77,7 +77,7 @@ source archives, and writes a manifest containing per-clip audio hashes. Two
 digital silence clips are scored separately for unwanted text.
 
 ```bash
-.venv/bin/pip install -r requirements-benchmarks.txt
+.venv/bin/pip install -c constraints.txt -r requirements-benchmarks.txt
 .venv/bin/python benchmarks/prepare_audio.py
 .venv/bin/python benchmarks/run.py \
   --manifest "$HOME/.cache/kdictate-benchmarks/audio/manifest.json" \

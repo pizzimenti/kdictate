@@ -143,12 +143,36 @@ the AUR ships instead of `requirements.txt`.
 
 Instead, exactly like the **voiceagent** package:
 
-- `build()` runs `pip install --target …/vendor -r packaging/vendor-requirements.txt --only-binary=:all:`, vendoring the deps as wheels into `/usr/lib/kdictate/vendor`.
+- `build()` runs `pip install --target …/vendor -c constraints.txt -r packaging/vendor-requirements.txt --only-binary=:all:`, vendoring the tested runtime wheels into `/usr/lib/kdictate/vendor`.
 - The wheel's console scripts are moved to `/usr/lib/kdictate/libexec/`, and `/usr/bin/{kdictate-daemon,kdictatectl,ibus-engine-kdictate}` use regular copies of `packaging/kdictate-launcher.sh`, which prepends the vendor dir (and system site-packages) to `PYTHONPATH` before exec'ing the real entry point.
 - **`PyGObject` is the one exception** — it builds C bindings against the system `gobject-introspection` and isn't a clean `--only-binary` target, so it ships as the `python-gobject` system dependency. `python-gobject` lives in the system site-packages, which the launcher also puts on `PYTHONPATH`.
 
 `packaging/vendor-requirements.txt` mirrors `requirements.txt` minus
 PyGObject; keep them in sync when bumping deps.
+
+`constraints.txt` locks the tested runtime, development, benchmark and Python
+build dependencies, including transitive dependencies. The package and source
+installer both apply it. Constraints do not install development packages into
+the runtime: only packages requested by the corresponding requirements file
+are installed. Regenerate the constraints deliberately when updating the stack:
+
+```bash
+uv pip compile requirements.txt requirements-dev.txt requirements-benchmarks.txt \
+  --upgrade --universal --python-version 3.11 --no-annotate \
+  --output-file constraints.txt
+```
+
+The universal resolution preserves Python 3.11 support (NumPy 2.4), while newer
+Python uses NumPy 2.5. Python 3.14 is the locally tested interpreter. Build tools
+are listed in `requirements-build.txt`; distro packages still supply makepkg's
+native tools and libraries. Do not replace system GObject/IBus/Vulkan libraries
+with pip packages. Source installs use PyGObject 3.58; packaged installs use the
+distro's `python-gobject`, also tested locally at 3.56.3.
+
+PyAV is deliberately constrained to 18.1: faster-whisper 1.2.1 passes
+`metadata_errors` to `av.open`, which [PyAV 19 removed](https://pyav.basswood.io/docs/stable/development/changelog.html).
+The real WAV-decoding integration test catches this incompatibility. Other
+dependencies use the latest compatible stable releases resolved for this update.
 
 ### Integration templates
 

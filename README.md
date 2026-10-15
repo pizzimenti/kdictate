@@ -17,7 +17,7 @@ Two desktop components talk over session D-Bus:
    events and maps them to IBus preedit and commit.
 
 Choose Whisper large-v3-turbo on CPU or GPU, or Parakeet TDT 0.6B v3 on GPU.
-The 1.0 release candidate keeps GPU models resident for faster responses,
+KDictate 1.0 keeps GPU models resident for faster responses,
 using the pinned whisper.cpp 1.9.5 stack with Vulkan (Q8_0).
 The installer detects GPU availability and prompts for one model; Whisper is
 the default. See [GPU options and benchmarks](docs/gpu-mode.md).
@@ -32,9 +32,9 @@ cd kdictate
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install -r requirements.txt
+pip install -c constraints.txt -r requirements.txt
 # optional, for local test/dev tooling such as pytest
-pip install -r requirements-dev.txt
+pip install -c constraints.txt -r requirements-dev.txt
 ```
 
 ### System dictation daemon

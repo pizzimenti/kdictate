@@ -354,6 +354,7 @@ def sync_runtime(ctx: InstallContext) -> None:
         f"{ctx.script_dir / 'kdictate'}/", f"{ctx.runtime_dir / 'kdictate'}/",
     ])
     copy_home_file(ctx, ctx.script_dir / "requirements.txt", ctx.runtime_dir / "requirements.txt")
+    copy_home_file(ctx, ctx.script_dir / "constraints.txt", ctx.runtime_dir / "constraints.txt")
     copy_home_file(ctx, ctx.script_dir / "pyproject.toml", ctx.runtime_dir / "pyproject.toml")
     if ctx.gpu:
         worker, reasons = _detect_gpu()
@@ -379,7 +380,8 @@ def sync_runtime(ctx: InstallContext) -> None:
 def install_python_environment(ctx: InstallContext) -> None:
     run_command(["python3", "-m", "venv", str(ctx.venv_dir)], quiet=True)
     run_command([ctx.pip_bin, "install", "--upgrade", "pip"], quiet=True)
-    run_command([ctx.pip_bin, "install", "-r", ctx.runtime_dir / "requirements.txt"], quiet=True)
+    run_command([ctx.pip_bin, "install", "-c", ctx.runtime_dir / "constraints.txt",
+                 "-r", ctx.runtime_dir / "requirements.txt"], quiet=True)
     run_command([ctx.pip_bin, "install", "--no-deps", "-e", ctx.runtime_dir], quiet=True)
 
 
